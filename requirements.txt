@@ -22,3 +22,8 @@ einops
 kornia
 scipy
 gitpython
+piexif
+rotary-embedding-torch
+onnxruntime
+segment-anything
+hf_transfer
