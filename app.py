@@ -49,7 +49,7 @@ def setup():
 
     # Pin Impact packs to exact versions used in reference workflow
     IMPACT_PACK_COMMIT = "61bd8397a18e7e7668e6a24e95168967768c2bed"
-    IMPACT_SUBPACK_VERSION = "v1.3.5"
+    IMPACT_SUBPACK_VERSION = "1.3.4"  # Using 1.3.4 (latest available, ref workflow uses "1.3.5" which doesn't exist as tag)
 
     for url in nodes:
         name = url.split("/")[-1]
