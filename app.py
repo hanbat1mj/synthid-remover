@@ -103,6 +103,11 @@ def convert_to_api(web_workflow):
     for node in nodes:
         node_id = str(node["id"])
         class_type = node["type"]
+        
+        # Skip UI-only nodes that aren't functional in the API
+        if class_type in ["Note", "Group", "Reroute"]:
+            continue
+            
         inputs = {}
         
         # 1. Handle Connections (from links)
