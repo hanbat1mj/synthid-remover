@@ -45,11 +45,19 @@ def setup():
     ]
     custom_nodes_path = os.path.join(COMFYUI_DIR, "custom_nodes")
     os.makedirs(custom_nodes_path, exist_ok=True)
+
+    # Pin Impact Pack to exact commit used in reference workflow
+    IMPACT_PACK_COMMIT = "61bd8397a18e7e7668e6a24e95168967768c2bed"
+
     for url in nodes:
         name = url.split("/")[-1]
         node_dest = os.path.join(custom_nodes_path, name)
         if not os.path.exists(node_dest):
             subprocess.run(["git", "clone", url, node_dest], check=True)
+            # Checkout specific commit for Impact Pack to match reference workflow
+            if "Impact-Pack" in name:
+                subprocess.run(["git", "checkout", IMPACT_PACK_COMMIT], cwd=node_dest, check=True)
+                print(f"Pinned Impact Pack to commit {IMPACT_PACK_COMMIT}")
 
     # 3. Models Download logic (Using hf_transfer for speed)
     model_configs = [
