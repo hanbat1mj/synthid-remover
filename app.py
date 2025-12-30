@@ -113,10 +113,10 @@ css = """
 footer {display: none !important;}
 """
 
-with gr.Blocks(css=css, title="SynthID Bypass") as demo:
+with gr.Blocks() as demo:
     with gr.Column(elem_id="container"):
         gr.Markdown("# SynthID Bypass")
-        gr.Markdown("Replicating 'Synthid-Bypass' with exact Z-Image-Turbo models. Note: Initial boot takes ~5 minutes to download 10GB of models.")
+        gr.Markdown("Replicating 'Synthid-Bypass'. Note: Initial boot takes ~5 minutes to download 10GB of models.")
         
         with gr.Row():
             with gr.Column():
@@ -133,5 +133,5 @@ with gr.Blocks(css=css, title="SynthID Bypass") as demo:
         )
 
 if __name__ == "__main__":
-    # Disable flagging and share to keep UI clean
-    demo.launch(show_api=False)
+    # In Gradio 5/6, css and title moved to launch()
+    demo.launch(css=css, title="SynthID Bypass")
