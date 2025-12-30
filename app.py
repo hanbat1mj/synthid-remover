@@ -100,13 +100,16 @@ def convert_to_api(web_workflow):
             link_map[l_id] = [str(node_from), slot_from]
             
     api_prompt = {}
+    skipped_nodes = []
     for node in nodes:
         node_id = str(node["id"])
         class_type = node["type"]
         
-        # Skip UI-only nodes and provider/loader nodes that aren't functional in the API
-        if class_type in ["Note", "Group", "Reroute", "Float", "Int", "String", 
-                          "UltralyticsDetectorProvider", "SAMLoader"]:
+        # Skip UI-only nodes, provider/loader nodes, and primitive types
+        skip_types = ["Note", "Group", "Reroute", "Float", "Int", "String", "Boolean"]
+        # Also skip any node with "Provider" or "Loader" in the name (these are config nodes)
+        if class_type in skip_types or "Provider" in class_type or "Loader" in class_type and class_type not in ["UNETLoader", "VAELoader", "CLIPLoader"]:
+            skipped_nodes.append(f"{node_id}:{class_type}")
             continue
             
         inputs = {}
@@ -165,6 +168,8 @@ def convert_to_api(web_workflow):
             "class_type": class_type,
             "inputs": inputs
         }
+    
+    print(f"Converted {len(api_prompt)} nodes, skipped {len(skipped_nodes)} nodes: {', '.join(skipped_nodes[:10])}")
     return api_prompt
 
 # Execute setup on boot
