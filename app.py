@@ -104,8 +104,9 @@ def convert_to_api(web_workflow):
         node_id = str(node["id"])
         class_type = node["type"]
         
-        # Skip UI-only nodes that aren't functional in the API
-        if class_type in ["Note", "Group", "Reroute", "Float", "Int", "String"]:
+        # Skip UI-only nodes and provider/loader nodes that aren't functional in the API
+        if class_type in ["Note", "Group", "Reroute", "Float", "Int", "String", 
+                          "UltralyticsDetectorProvider", "SAMLoader"]:
             continue
             
         inputs = {}
