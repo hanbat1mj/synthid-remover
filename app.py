@@ -113,16 +113,16 @@ css = """
 footer {display: none !important;}
 """
 
-with gr.Blocks(title="SynthID Bypass") as demo:
+with gr.Blocks(title="SynthID Remover") as demo:
     with gr.Column(elem_id="container"):
-        gr.Markdown("# SynthID Bypass")
-        gr.Markdown("Replicating 'Synthid-Bypass'. Note: Initial boot takes ~5 minutes to download 10GB of models.")
+        gr.Markdown("# SynthID Remover")
+        gr.Markdown("This tool removes SynthID watermarks by re-rendering images through a high-fidelity diffusion reconstruction pipeline. It is specifically designed to bypass SynthID detection while maintaining the original image structure.")
         
         with gr.Row():
             with gr.Column():
                 input_img = gr.Image(type="pil", label="Input Image", height=512)
             with gr.Column():
-                output_img = gr.Image(type="pil", label="Reconstructed Image (Bypass)", height=512, interactive=False)
+                output_img = gr.Image(type="pil", label="Cleaned Image", height=512, interactive=False)
         
         submit_btn = gr.Button("Remove Watermark", variant="primary")
         
@@ -138,7 +138,7 @@ with gr.Blocks(title="SynthID Bypass") as demo:
             This project is a direct implementation of the research by [00quebec/Synthid-Bypass](https://github.com/00quebec/Synthid-Bypass). All credit for the discovery and the original ComfyUI workflows goes to the original authors.
             
             ### Technical Breakdown
-            The bypass works by re-processing the image through a specialized diffusion pipeline:
+            The removal process works by re-processing the image through a specialized diffusion pipeline:
             1. **Pixel Laundering**: The image is re-rendered using the **Z-Image-Turbo (S3-DiT)** model with a low denoising factor (0.2). This replaces the watermark's subtle noise patterns with new noise from the model.
             2. **Structural Guidance**: To prevent the image from changing, a **Canny ControlNet** locks in the original geometry and composition.
             3. **Multi-Pass Denoising**: The process runs in three iterative stages to gently scrub away the watermark without introducing artifacts.
