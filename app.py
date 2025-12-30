@@ -63,8 +63,9 @@ def initialize_models():
             use_safetensors=True
         )
         
-        # Scheduler: Euler Ancestral (Matches repo's "simple"/"euler")
-        pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(pipe.scheduler.config)
+        # Scheduler: Euler (Matches repo's "simple"/"euler")
+        from diffusers import EulerDiscreteScheduler
+        pipe.scheduler = EulerDiscreteScheduler.from_config(pipe.scheduler.config)
         
         pipe = pipe.to(device)
         
