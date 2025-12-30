@@ -217,7 +217,7 @@ def remove_watermark(input_image):
         raise RuntimeError("ComfyUI server failed to start. Port 8188 remained closed.")
 
     try:
-        # 3. Prepare Prompt
+        # 3. Load workflow and convert using ComfyUI's built-in converter
         workflow_path = os.path.join(BYPASS_REPO_DIR, "Synthid_Bypass.json")
         with open(workflow_path, 'r') as f:
             web_wf = json.load(f)
@@ -226,9 +226,16 @@ def remove_watermark(input_image):
         for node in web_wf.get("nodes", []):
             if node.get("id") == 11:
                 node["widgets_values"] = [input_filename, "image"]
-
-        # Convert to API format
-        api_prompt = convert_to_api(web_wf)
+        
+        # Use ComfyUI's built-in /workflow/convert endpoint for proper conversion
+        print("Converting workflow to API format...")
+        convert_resp = requests.post("http://127.0.0.1:8188/workflow/convert", json=web_wf)
+        
+        if convert_resp.status_code != 200:
+            raise RuntimeError(f"Failed to convert workflow: {convert_resp.text}")
+            
+        api_prompt = convert_resp.json()
+        print(f"Workflow converted successfully ({len(api_prompt)} nodes)")
         
         print("Queueing prompt to ComfyUI...")
         prompt_data = {"prompt": api_prompt}
