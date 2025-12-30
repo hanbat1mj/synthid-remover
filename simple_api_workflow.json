@@ -1,11 +1,19 @@
 {
   "506": {
     "class_type": "SeedVR2LoadVAEModel",
-    "inputs": {}
+    "inputs": {
+      "model": "ema_vae_fp16.safetensors",
+      "device": "cuda:0",
+      "dtype": "auto"
+    }
   },
   "505": {
     "class_type": "SeedVR2LoadDiTModel",
-    "inputs": {}
+    "inputs": {
+      "model": "seedvr2_ema_7b_sharp_fp16.safetensors",
+      "device": "cuda:0",
+      "dtype": "auto"
+    }
   },
   "10": {
     "class_type": "CLIPTextEncode",
@@ -13,7 +21,8 @@
       "clip": [
         "214",
         0
-      ]
+      ],
+      "text": "blurry, ugly, bad quality,"
     }
   },
   "8": {
@@ -44,7 +53,9 @@
   },
   "12": {
     "class_type": "VAELoader",
-    "inputs": {}
+    "inputs": {
+      "vae_name": "ae.safetensors"
+    }
   },
   "9": {
     "class_type": "CLIPTextEncode",
@@ -52,12 +63,16 @@
       "clip": [
         "214",
         0
-      ]
+      ],
+      "text": "high definition skin texture, detailed skin texture, visible pores"
     }
   },
   "15": {
     "class_type": "UNETLoader",
-    "inputs": {}
+    "inputs": {
+      "unet_name": "z_image_turbo_bf16.safetensors",
+      "weight_dtype": "default"
+    }
   },
   "6": {
     "class_type": "ModelSamplingAuraFlow",
@@ -65,7 +80,8 @@
       "model": [
         "15",
         0
-      ]
+      ],
+      "shift": 3
     }
   },
   "513": {
@@ -84,19 +100,10 @@
         "6",
         0
       ],
-      "width": [
-        "513",
-        0
-      ],
-      "height": [
-        "513",
-        1
-      ]
+      "width": 3840,
+      "height": 2160,
+      "enabled": true
     }
-  },
-  "558": {
-    "class_type": "Note",
-    "inputs": {}
   },
   "3": {
     "class_type": "KSampler",
@@ -117,10 +124,13 @@
         "8",
         0
       ],
-      "denoise": [
-        "572",
-        0
-      ]
+      "seed": 119704256080775,
+      "control_after_generate": "fixed",
+      "steps": 9,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 0.2
     }
   },
   "35": {
@@ -142,10 +152,13 @@
         "3",
         0
       ],
-      "denoise": [
-        "572",
-        0
-      ]
+      "seed": 208543382424107,
+      "control_after_generate": "fixed",
+      "steps": 9,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 0.2
     }
   },
   "58": {
@@ -167,15 +180,20 @@
         "35",
         0
       ],
-      "denoise": [
-        "572",
-        0
-      ]
+      "seed": 1109963669891326,
+      "control_after_generate": "fixed",
+      "steps": 9,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 0.2
     }
   },
   "401": {
     "class_type": "ModelPatchLoader",
-    "inputs": {}
+    "inputs": {
+      "model_name": "Z-Image-Turbo-Fun-Controlnet-Union.safetensors"
+    }
   },
   "507": {
     "class_type": "SeedVR2VideoUpscaler",
@@ -191,12 +209,16 @@
       "vae": [
         "506",
         0
-      ]
+      ],
+      "seed": 9999999
     }
   },
   "214": {
     "class_type": "CLIPLoader",
-    "inputs": {}
+    "inputs": {
+      "clip_name": "qwen_3_4b.safetensors",
+      "type": "lumina2"
+    }
   },
   "573": {
     "class_type": "ImageScaleToTotalPixels",
@@ -204,7 +226,10 @@
       "image": [
         "11",
         0
-      ]
+      ],
+      "upscale_method": "nearest-exact",
+      "megapixels": 2.5,
+      "resolution_steps": 1
     }
   },
   "574": {
@@ -217,20 +242,10 @@
       "input2": [
         "573",
         0
-      ]
+      ],
+      "select": 1,
+      "sel_mode": false
     }
-  },
-  "575": {
-    "class_type": "Note",
-    "inputs": {}
-  },
-  "576": {
-    "class_type": "Note",
-    "inputs": {}
-  },
-  "572": {
-    "class_type": "Float",
-    "inputs": {}
   },
   "577": {
     "class_type": "Image Comparer (rgthree)",
@@ -248,12 +263,9 @@
   "11": {
     "class_type": "LoadImage",
     "inputs": {
-      "image": "03.png"
+      "image": "03.png",
+      "upload": "image"
     }
-  },
-  "578": {
-    "class_type": "UltralyticsDetectorProvider",
-    "inputs": {}
   },
   "579": {
     "class_type": "Canny",
@@ -261,7 +273,9 @@
       "image": [
         "574",
         0
-      ]
+      ],
+      "low_threshold": 0.02,
+      "high_threshold": 0.11
     }
   },
   "580": {
@@ -315,7 +329,33 @@
       "bbox_detector": [
         "578",
         0
-      ]
+      ],
+      "guide_size": 256,
+      "guide_size_for": true,
+      "max_size": 1024,
+      "seed": 869357132031987,
+      "steps": "randomize",
+      "cfg": 20,
+      "sampler_name": 0.5,
+      "scheduler": "dpmpp_2m",
+      "denoise": "simple",
+      "feather": 0.12,
+      "noise_mask": 8,
+      "force_inpaint": true,
+      "bbox_threshold": true,
+      "bbox_dilation": 0.35,
+      "bbox_crop_factor": 8,
+      "sam_detection_hint": 2.2,
+      "sam_dilation": "center-1",
+      "sam_threshold": 0,
+      "sam_bbox_expansion": 0.93,
+      "sam_mask_hint_threshold": 0,
+      "sam_max_limit_for_hint": 0.7,
+      "sam_min_sub_area": "False",
+      "sam_mask_hint_use_negative": 5,
+      "drop_size": "",
+      "wildcard": 1,
+      "cycle": false
     }
   },
   "62": {
