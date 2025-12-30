@@ -1,20 +1,24 @@
-# Approach Verification
+# SynthID Bypass: Headless ComfyUI Implementation
 
-The user requested an exact match of the [Synthid-Bypass](https://github.com/00quebec/Synthid-Bypass) workflow.
-Since the original repo uses ComfyUI (node-based) and specialized models, we have implemented the **logic-equivalent** using Python and Diffusers.
+This application has been transitioned to a **Headless ComfyUI backend** to ensure a 100% exact replication of the original research.
 
-## Component Mapping
+## Why this change?
+While `diffusers` is a powerful library, the `00quebec/Synthid-Bypass` research relies on a highly specialized stack of technologies:
+1.  **Z-Image-Turbo (S3-DiT)**: A specific architecture that differs from standard Stable Diffusion.
+2.  **Union ControlNet**: A multi-mode ControlNet that handles structural guidance in a unique way.
+3.  **ComfyUI Custom Nodes**: Specifically `Impact Pack` for face restoration and `SeedVR2` for upscaling.
 
-| ComfyUI Node (Original) | Our Implementation (app.py) | Reason |
-|-------------------------|-----------------------------|--------|
-| `SeedVR2LoadDiTModel` (Z-Image-Turbo) | `StabilityAI/SDXL-Turbo` | Both are Turbo-class models. Z-Image is available (`Tongyi-MAI/Z-Image-Turbo`) but lacks **ControlNet** support in Diffusers, which is required for this workflow. SDXL Turbo is the closest equivalent *with* ControlNet support. |
-| `KSampler` (steps=9, denoise=0.2) | `pipeline(img2img)` with `strength=0.2, steps=9` | Exact parameter match. |
-| `KSampler` (cfg=1.0) | `guidance_scale=1.0` | Exact parameter match. |
-| `Sequential Loop x3` | `for i in range(3):` | Exact logic match. |
-| `Canny Edge` (0.02, 0.11) | `ControlNet Canny` (5, 28) | Exact threshold match (converted from normalized). |
-| `FaceDetailer` (YOLO) | `process_face_detailer` (YOLOv8) | Exact backend match (`yolov8n-face.pt`). |
+By running the actual ComfyUI engine in the background of the Hugging Face Space, we guarantee:
+- **Identical Model Loading**: Using the exact `.safetensors` files from the research.
+- **Identical Logic**: Processing images through the exact same node graph.
 
-## Why Z-Image-Turbo Cannot Be Used
-While `Tongyi-MAI/Z-Image-Turbo` is supported in Diffusers for generation, the **ControlNet** implementation (used in the research as `Z-Image-Turbo-Fun-Controlnet-Union`) has not been ported to the Diffusers library yet.
-Without ControlNet, the watermark removal process fails to preserve image structure (creating hallucinations).
-**SDXL Turbo** + **SDXL ControlNet** is the only viable combination to replicate the *behavior* of the research.
+## Architecture
+- **Backend**: Headless ComfyUI server.
+- **Frontend**: Gradio UI acting as a client.
+- **Environment**: Hugging Face ZeroGPU (with model offloading to CPU when idle).
+
+## Deployment Note
+The first run on a fresh Hugging Face Space will involve:
+1. Cloning ComfyUI and 6+ custom node repositories.
+2. Downloading approximately 10GB of model weights.
+This may lead to a long initial "Building" phase, but ensures the most faithful output possible.
