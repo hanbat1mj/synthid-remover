@@ -219,7 +219,7 @@
       "color_correction": "fixed",
       "batch_size": 2160,
       "uniform_batch_size": 0,
-      "resolution": 1080,
+      "resolution": 1,
       "max_resolution": false
     }
   },
@@ -310,12 +310,6 @@
       "strength": 1.2
     }
   },
-  "578": {
-    "class_type": "UltralyticsDetectorProvider",
-    "inputs": {
-      "model_name": "bbox/yolov8n-face.pt"
-    }
-  },
   "581": {
     "class_type": "FaceDetailer",
     "inputs": {
@@ -343,34 +337,32 @@
         "10",
         0
       ],
-      "bbox_detector": [
-        "578",
-        0
-      ],
       "guide_size": 256,
       "guide_size_for": true,
       "max_size": 1024,
       "seed": 869357132031987,
-      "steps": 20,
-      "cfg": 0.5,
-      "sampler_name": "euler",
-      "scheduler": "simple",
-      "denoise": 0.5,
+      "steps": "randomize",
+      "cfg": 20,
+      "sampler_name": 0.5,
+      "scheduler": "dpmpp_2m",
+      "denoise": "simple",
       "feather": 0.12,
       "noise_mask": 8,
       "force_inpaint": true,
-      "bbox_threshold": 0.5,
-      "bbox_dilation": 10,
-      "bbox_crop_factor": 3.0,
-      "sam_detection_hint": "center-1",
-      "sam_dilation": 0,
-      "sam_threshold": 0.93,
-      "sam_bbox_expansion": 0,
-      "sam_mask_hint_threshold": 0.7,
-      "sam_mask_hint_use_negative": "False",
-      "drop_size": 10,
-      "wildcard": "",
-      "cycle": 1
+      "bbox_threshold": true,
+      "bbox_dilation": 0.35,
+      "bbox_crop_factor": 8,
+      "sam_detection_hint": 2.2,
+      "sam_dilation": "center-1",
+      "sam_threshold": 0,
+      "sam_bbox_expansion": 0.93,
+      "sam_mask_hint_threshold": 0,
+      "sam_max_limit_for_hint": 0.7,
+      "sam_min_sub_area": "False",
+      "sam_mask_hint_use_negative": 5,
+      "drop_size": "",
+      "wildcard": 1,
+      "cycle": false
     }
   },
   "62": {

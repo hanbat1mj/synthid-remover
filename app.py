@@ -56,7 +56,7 @@ def setup():
         {"repo": "Comfy-Org/z_image_turbo", "file": "split_files/vae/ae.safetensors", "dest": "models/vae/ae.safetensors"},
         {"repo": "Comfy-Org/z_image_turbo", "file": "split_files/diffusion_models/z_image_turbo_bf16.safetensors", "dest": "models/diffusion_models/z_image_turbo_bf16.safetensors"},
         {"repo": "Comfy-Org/z_image_turbo", "file": "split_files/text_encoders/qwen_3_4b.safetensors", "dest": "models/text_encoders/qwen_3_4b.safetensors"},
-        {"repo": "alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union", "file": "Z-Image-Turbo-Fun-Controlnet-Union.safetensors", "dest": "models/model_patches/Z-Image-Turbo-Fun-Controlnet-Union.safetensors"},
+        {"repo": "alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union", "file": "Z-Image-Turbo-Fun-Controlnet-Union.safetensors", "dest": "models/controlnet/Z-Image-Turbo-Fun-Controlnet-Union.safetensors"},
         {"repo": "deepghs/yolo-face", "file": "yolov8n-face/model.pt", "dest": "models/ultralytics/bbox/yolov8n-face.pt"},
         # SAM model for FaceDetailer
         {"repo": "YouLiXiya/YL-SAM", "file": "sam_vit_b_01ec64.pth", "dest": "models/sams/sam_vit_b_01ec64.pth"}
