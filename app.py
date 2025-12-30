@@ -143,8 +143,8 @@ def process_face_detailer(image, pipe, prompt, negative_prompt, steps, strength,
             image=face_crop_resized,
             control_image=face_edges,
             num_inference_steps=steps,
-            strength=0.30, # Faces need a bit more scrub
-            guidance_scale=1.5, # Low guidance for Turbo
+            strength=strength, # Use passed strength (0.30)
+            guidance_scale=1.0, # EXACT MATCH: Repo uses CFG 1.0
             controlnet_conditioning_scale=0.5,
             generator=torch.manual_seed(seed)
         ).images[0]
@@ -201,6 +201,8 @@ def remove_watermark(
         # Seed
         seed = 42
         
+        print(f"Starting Watermark Removal: Loops={loops}, Denoise={denoise_strength}, CFG=1.0")
+
         # 2. Sequential KSampler Loop (Key to the bypass)
         for i in range(loops):
             progress(0.2 + (i/loops)*0.5, desc=f"Denoising Pass {i+1}/{loops} (Strength: {denoise_strength})...")
@@ -217,16 +219,22 @@ def remove_watermark(
                 control_image=edges,
                 num_inference_steps=steps,
                 strength=denoise_strength,
-                guidance_scale=1.5, # Turbo needs low CFG
+                guidance_scale=1.0, # EXACT MATCH: Repo uses CFG 1.0
                 controlnet_conditioning_scale=0.6, # Structure preservation
                 generator=torch.manual_seed(seed + i)
             ).images[0]
             
         # 3. Face Detailer (Optional but recommended)
         if use_face_detailer:
+            # Face Detailer steps
+            fd_steps = steps
+            fd_strength = 0.30
+            fd_cfg = 1.0 # Match repo logic
+            
             progress(0.8, desc="Running Face Detailer...")
+            print("Running Face Detailer...")
             current_image = process_face_detailer(
-                current_image, pipeline, prompt, negative_prompt, steps, denoise_strength, seed
+                current_image, pipeline, prompt, negative_prompt, fd_steps, fd_strength, seed
             )
             
         progress(1.0, desc="Done!")
