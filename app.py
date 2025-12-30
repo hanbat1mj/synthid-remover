@@ -105,7 +105,7 @@ def convert_to_api(web_workflow):
         class_type = node["type"]
         
         # Skip UI-only nodes that aren't functional in the API
-        if class_type in ["Note", "Group", "Reroute"]:
+        if class_type in ["Note", "Group", "Reroute", "Float", "Int", "String"]:
             continue
             
         inputs = {}
