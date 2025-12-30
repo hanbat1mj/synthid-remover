@@ -1,3 +1,5 @@
+import spaces  # MUST be first for ZeroGPU!
+
 import gradio as gr
 import numpy as np
 from PIL import Image
@@ -5,7 +7,6 @@ import cv2
 import torch
 from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, DDIMScheduler
 from diffusers.utils import load_image
-import spaces
 
 # Initialize models
 def initialize_models():
