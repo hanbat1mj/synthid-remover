@@ -29,3 +29,16 @@ segment-anything
 hf_transfer
 torchsde
 av
+comfyui-frontend-package
+comfyui-workflow-templates
+comfyui-embedded-docs
+tokenizers
+sentencepiece
+yarl
+pyyaml
+alembic
+SQLAlchemy
+spandrel
+pydantic
+pydantic-settings
+msgpack
