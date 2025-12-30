@@ -132,6 +132,19 @@ with gr.Blocks() as demo:
             outputs=[output_img]
         )
 
+        with gr.Accordion("How it works & Acknowledgments", open=False):
+            gr.Markdown("""
+            ### Acknowledgments
+            This project is a direct implementation of the research by [00quebec/Synthid-Bypass](https://github.com/00quebec/Synthid-Bypass). All credit for the discovery and the original ComfyUI workflows goes to the original authors.
+            
+            ### Technical Breakdown
+            The bypass works by re-processing the image through a specialized diffusion pipeline:
+            1. **Pixel Laundering**: The image is re-rendered using the **Z-Image-Turbo (S3-DiT)** model with a low denoising factor (0.2). This replaces the watermark's subtle noise patterns with new noise from the model.
+            2. **Structural Guidance**: To prevent the image from changing, a **Canny ControlNet** locks in the original geometry and composition.
+            3. **Multi-Pass Denoising**: The process runs in three iterative stages to gently scrub away the watermark without introducing artifacts.
+            4. **Face Restoration**: Using **FaceDetailer (YOLOv8)**, any detected faces are isolated and refined separately to preserve facial identity and high-end detail.
+            """)
+
 if __name__ == "__main__":
     # In Gradio 5/6, css and title moved to launch()
     demo.launch(css=css, title="SynthID Bypass")
