@@ -12,28 +12,39 @@ import spaces
 def initialize_models():
     """Initialize the diffusion models and ControlNet"""
     try:
+        # Determine device and dtype
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        dtype = torch.float16 if device == "cuda" else torch.float32
+        
+        print(f"Initializing models on {device} with {dtype}...")
+        
         # Load ControlNet for Canny edge detection
         controlnet = ControlNetModel.from_pretrained(
             "lllyasviel/control_v11p_sd15_canny",
-            torch_dtype=torch.float16
+            torch_dtype=dtype
         )
         
         # Load Stable Diffusion pipeline with ControlNet
         pipe = StableDiffusionControlNetPipeline.from_pretrained(
             "runwayml/stable-diffusion-v1-5",
             controlnet=controlnet,
-            torch_dtype=torch.float16,
+            torch_dtype=dtype,
             safety_checker=None
         )
         
         # Use DDIM scheduler for better quality
         pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
-        pipe = pipe.to("cuda")
-        pipe.enable_model_cpu_offload()
+        pipe = pipe.to(device)
+        
+        # Enable optimizations if on GPU
+        if device == "cuda":
+            pipe.enable_model_cpu_offload()
         
         return pipe
     except Exception as e:
         print(f"Error initializing models: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 # Global pipeline variable
