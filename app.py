@@ -80,7 +80,9 @@ def get_canny_edges(image, low_threshold=100, high_threshold=200):
         image_np = cv2.cvtColor(image_np, cv2.COLOR_RGBA2RGB)
     
     gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
-    edges = cv2.Canny(gray, low_threshold, high_threshold)
+    # Repo uses 0.02 and 0.11 (normalized). 0.02*255 ~= 5, 0.11*255 ~= 28.
+    # This captures very fine details.
+    edges = cv2.Canny(gray, 5, 28)
     edges_rgb = cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB)
     return Image.fromarray(edges_rgb)
 
