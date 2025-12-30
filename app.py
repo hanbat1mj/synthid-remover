@@ -113,7 +113,7 @@ css = """
 footer {display: none !important;}
 """
 
-with gr.Blocks() as demo:
+with gr.Blocks(title="SynthID Bypass") as demo:
     with gr.Column(elem_id="container"):
         gr.Markdown("# SynthID Bypass")
         gr.Markdown("Replicating 'Synthid-Bypass'. Note: Initial boot takes ~5 minutes to download 10GB of models.")
@@ -146,5 +146,5 @@ with gr.Blocks() as demo:
             """)
 
 if __name__ == "__main__":
-    # In Gradio 5/6, css and title moved to launch()
-    demo.launch(css=css, title="SynthID Bypass")
+    # In Gradio 6.0+, css moved to launch(), but title remains in Blocks()
+    demo.launch(css=css)
