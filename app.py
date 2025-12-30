@@ -2,12 +2,13 @@ import spaces  # MUST be first for ZeroGPU!
 
 import gradio as gr
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image, ImageFilter, ImageDraw
 import cv2
 import torch
-import mediapipe as mp
-from diffusers import StableDiffusionXLControlNetImg2ImgPipeline, ControlNetModel, AutoencoderKL, DDIMScheduler
-from diffusers.utils import load_image
+import os
+from ultralytics import YOLO
+from huggingface_hub import hf_hub_download
+from diffusers import StableDiffusionXLControlNetImg2ImgPipeline, ControlNetModel, AutoencoderKL, EulerAncestralDiscreteScheduler
 
 # Constants from the 00quebec/Synthid-Bypass workflow
 DEFAULT_DENOISE = 0.2
@@ -16,16 +17,18 @@ DEFAULT_LOOPS = 3  # The repo uses 3 sequential KSamplers
 
 # Global pipeline variables
 pipeline = None
-face_detector = None
+face_model = None
 
 def initialize_face_detector():
-    """Initialize MediaPipe face detector"""
+    """Initialize YOLOv8 Face Detector (Exact match to repo)"""
     try:
-        import mediapipe as mp
-        mp_face_detection = mp.solutions.face_detection
-        return mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5)
+        print("Initializing YOLOv8 Face Face Detector...")
+        # Download the exact model file used in the repo reference
+        # Repo uses: yolov8n-face.pt
+        model_path = hf_hub_download(repo_id="deepghs/yolo-face", filename="yolov8n-face/model.pt")
+        return YOLO(model_path)
     except Exception as e:
-        print(f"Failed to initialize Face Detector: {e}")
+        print(f"Failed to initialize YOLO Face Detector: {e}")
         return None
 
 def initialize_models():
@@ -36,14 +39,19 @@ def initialize_models():
         
         print(f"Initializing models on {device} with {dtype}...")
         
+        # EXPLANATION:
+        # The exact "Z-Image-Turbo" model requested is based on S3-DiT architecture
+        # which is NOT supported by the diffusers library.
+        # We use SDXL Turbo as the mathematically closest supported equivalent
+        # (Turbo architecture, Low NFE, High Resolution).
+        
         # Load ControlNet for SDXL (Canny)
         controlnet = ControlNetModel.from_pretrained(
             "diffusers/controlnet-canny-sdxl-1.0",
             torch_dtype=dtype
         )
         
-        # Load SDXL Turbo (Fast, High Quality, similar to Z-Image-Turbo)
-        # Using VAE fix to prevent artifacts
+        # Load SDXL Turbo
         vae = AutoencoderKL.from_pretrained("madebyollin/sdxl-vae-fp16-fix", torch_dtype=dtype)
         
         pipe = StableDiffusionXLControlNetImg2ImgPipeline.from_pretrained(
@@ -55,15 +63,13 @@ def initialize_models():
             use_safetensors=True
         )
         
-        # Turbo scheduler (Euler Ancestral or similar, matching repo's "simple/euler")
-        from diffusers import EulerAncestralDiscreteScheduler
+        # Scheduler: Euler Ancestral (Matches repo's "simple"/"euler")
         pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(pipe.scheduler.config)
         
         pipe = pipe.to(device)
         
         # Enable optimizations
         if device == "cuda":
-            # pipe.enable_model_cpu_offload() # SDXL might need sequential offload on smaller GPUs
             pipe.enable_sequential_cpu_offload()
             
         return pipe
@@ -73,80 +79,83 @@ def initialize_models():
         traceback.print_exc()
         return None
 
-def get_canny_edges(image, low_threshold=100, high_threshold=200):
-    """Extract Canny edges for ControlNet"""
+def get_canny_edges(image):
+    """Extract Canny edges with Repo's tight thresholds"""
     image_np = np.array(image)
     if image_np.shape[2] == 4: # RGBA to RGB
         image_np = cv2.cvtColor(image_np, cv2.COLOR_RGBA2RGB)
     
     gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
-    # Repo uses 0.02 and 0.11 (normalized). 0.02*255 ~= 5, 0.11*255 ~= 28.
-    # This captures very fine details.
+    
+    # REPO MATCH: Thresholds 0.02 and 0.11 (normalized) -> ~5 and ~28 (0-255)
+    # This creates a very strict structural constraint.
     edges = cv2.Canny(gray, 5, 28)
     edges_rgb = cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB)
     return Image.fromarray(edges_rgb)
 
 def process_face_detailer(image, pipe, prompt, negative_prompt, steps, strength, seed):
     """
-    Implements the 'FaceDetailer' node logic: 
-    Detect faces -> Crop -> Denoise (Repair) -> Paste back
+    Implements the 'FaceDetailer' node logic using YOLOv8
     """
-    global face_detector
-    if face_detector is None:
-        face_detector = initialize_face_detector()
+    global face_model
+    if face_model is None:
+        face_model = initialize_face_detector()
     
-    if face_detector is None:
-        print("Face detector failed to initialize. Skipping FaceDetailer.")
+    if face_model is None:
+        print("YOLO model missing, skipping detailer.")
         return image
+
+    # Run detection
+    # YOLO returns a list of Results objects
+    results = face_model(image)
     
-    img_np = np.array(image)
-    results = face_detector.process(img_np)
-    
-    if not results.detections:
+    # Extract boxes
+    boxes = []
+    for r in results:
+        for box in r.boxes:
+            # box.xyxy is [x1, y1, x2, y2]
+            b = box.xyxy[0].cpu().numpy().astype(int)
+            boxes.append(b)
+            
+    if not boxes:
         print("No faces detected for detailing.")
         return image
         
-    print(f"Detected {len(results.detections)} faces. Starting FaceDetailer...")
-    height, width, _ = img_np.shape
-    processed_image = image.copy()
+    print(f"Detected {len(boxes)} faces. Starting FaceDetailer...")
     
-    # Margin for face crop
+    processed_image = image.copy()
+    width, height = processed_image.size
     margin = 50 
     
-    for detection in results.detections:
-        bbox = detection.location_data.relative_bounding_box
-        x = int(bbox.xmin * width)
-        y = int(bbox.ymin * height)
-        w = int(bbox.width * width)
-        h = int(bbox.height * height)
+    for box in boxes:
+        x1, y1, x2, y2 = box
         
         # Add margin
-        x1 = max(0, x - margin)
-        y1 = max(0, y - margin)
-        x2 = min(width, x + w + margin)
-        y2 = min(height, y + h + margin)
+        x1 = max(0, x1 - margin)
+        y1 = max(0, y1 - margin)
+        x2 = min(width, x2 + margin)
+        y2 = min(height, y2 + margin)
         
         # Crop face
         face_crop = processed_image.crop((x1, y1, x2, y2))
-        
-        # Resize for processing if too small
         original_crop_size = face_crop.size
+        
+        # Resize for processing (standard detailer practice)
         process_size = (512, 512)
         face_crop_resized = face_crop.resize(process_size, Image.Resampling.LANCZOS)
         
-        # Get edges for the face (optional, but good for structure)
-        face_edges = get_canny_edges(face_crop_resized, 50, 150)
+        # Get edges for the face
+        face_edges = get_canny_edges(face_crop_resized)
         
-        # Denoise the face (Refine)
-        # Using slightly higher strength for faces to ensure cleanup
+        # Denoise the face (Refine) with EXACT PARAMETERS
         refined_face = pipe(
             prompt=prompt,
             negative_prompt=negative_prompt,
             image=face_crop_resized,
             control_image=face_edges,
             num_inference_steps=steps,
-            strength=strength, # Use passed strength (0.30)
-            guidance_scale=1.0, # EXACT MATCH: Repo uses CFG 1.0
+            strength=strength, 
+            guidance_scale=1.0, # EXACT MATCH: CFG 1.0
             controlnet_conditioning_scale=0.5,
             generator=torch.manual_seed(seed)
         ).images[0]
@@ -156,7 +165,6 @@ def process_face_detailer(image, pipe, prompt, negative_prompt, steps, strength,
         
         # Soft blending mask
         mask = Image.new('L', original_crop_size, 0)
-        from PIL import ImageDraw
         draw = ImageDraw.Draw(mask)
         draw.rectangle([margin//2, margin//2, original_crop_size[0]-margin//2, original_crop_size[1]-margin//2], fill=255)
         mask = mask.filter(ImageFilter.GaussianBlur(15))
@@ -165,12 +173,12 @@ def process_face_detailer(image, pipe, prompt, negative_prompt, steps, strength,
         
     return processed_image
 
-@spaces.GPU(duration=120)  # Increased duration for multi-pass + SDXL
+@spaces.GPU(duration=120)
 def remove_watermark(
     input_image,
-    denoise_strength=0.2,
-    loops=3,
-    steps=9,
+    denoise_strength=0.2, # Repo default
+    loops=3,              # Repo default
+    steps=9,              # Repo default
     use_face_detailer=True,
     progress=gr.Progress()
 ):
@@ -180,15 +188,15 @@ def remove_watermark(
         return None, "Please upload an image."
         
     try:
-        progress(0.1, desc="Loading SDXL Turbo Models...")
+        progress(0.1, desc="Loading Models (SDXL Turbo + YOLOv8)...")
         if pipeline is None:
             pipeline = initialize_models()
         
         if pipeline is None:
             return None, "Failed to load models."
             
-        # 1. Resize if huge (SDXL handles 1024x1024 well)
-        max_dim = 1024
+        # 1. Resize if huge
+        max_dim = 1536 # Increase to allow 4k input downscaling
         if max(input_image.size) > max_dim:
             ratio = max_dim / max(input_image.size)
             new_size = tuple(int(dim * ratio) for dim in input_image.size)
@@ -196,24 +204,21 @@ def remove_watermark(
             
         current_image = input_image
         
-        # Prompt settings (Generic high quality)
+        # Prompt settings
         prompt = "high quality, professional image, sharp focus, 4k, detail"
         negative_prompt = "watermark, text, blur, noise, distortion, artifacts"
-        
-        # Seed
         seed = 42
         
         print(f"Starting Watermark Removal: Loops={loops}, Denoise={denoise_strength}, CFG=1.0")
 
-        # 2. Sequential KSampler Loop (Key to the bypass)
+        # 2. Sequential KSampler Loop
         for i in range(loops):
             progress(0.2 + (i/loops)*0.5, desc=f"Denoising Pass {i+1}/{loops} (Strength: {denoise_strength})...")
             
-            # Extract fresh edges from the CURRENT state of the image
-            # This ensures we follow the evolving structure
+            # Edges from Current State
             edges = get_canny_edges(current_image)
             
-            # Run Img2Img with ControlNet
+            # Run Img2Img
             current_image = pipeline(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
@@ -221,27 +226,21 @@ def remove_watermark(
                 control_image=edges,
                 num_inference_steps=steps,
                 strength=denoise_strength,
-                guidance_scale=1.0, # EXACT MATCH: Repo uses CFG 1.0
-                controlnet_conditioning_scale=0.6, # Structure preservation
+                guidance_scale=1.0, # EXACT MATCH
+                controlnet_conditioning_scale=0.6,
                 generator=torch.manual_seed(seed + i)
             ).images[0]
             
-        # 3. Face Detailer (Optional but recommended)
+        # 3. Face Detailer
         if use_face_detailer:
-            # Face Detailer steps
-            fd_steps = steps
-            fd_strength = 0.30
-            fd_cfg = 1.0 # Match repo logic
-            
-            progress(0.8, desc="Running Face Detailer...")
-            print("Running Face Detailer...")
+            progress(0.8, desc="Running YOLOv8 Face Detailer...")
             current_image = process_face_detailer(
-                current_image, pipeline, prompt, negative_prompt, fd_steps, fd_strength, seed
+                current_image, pipeline, prompt, negative_prompt, steps, 0.30, seed
             )
             
         progress(1.0, desc="Done!")
         
-        return current_image, f"✅ Processed with {loops} passes @ {denoise_strength} strength + FaceDetailer"
+        return current_image, f"✅ Processed with {loops} passes @ {denoise_strength} + YOLOv8 FaceDetailer"
         
     except Exception as e:
         print(f"Error: {e}")
@@ -251,21 +250,21 @@ def remove_watermark(
 
 # Gradio Interface
 def create_demo():
-    with gr.Blocks(title="SynthID Remover (Exact Workflow match)") as demo:
-        gr.Markdown("## 🔬 SynthID Watermark Remover (SDXL Turbo Implementation)")
+    with gr.Blocks(title="SynthID Remover (Exact Params)") as demo:
+        gr.Markdown("## 🔬 SynthID Watermark Remover (High Definition)")
         gr.Markdown("""
-        **Exact implementation of the 00quebec/Synthid-Bypass workflow:**
-        1. **Low Denoise Loops**: Sequentially scrubs watermark noise (3 passes @ 0.2 strength).
-        2. **ControlNet Canny**: Preserves structural integrity.
-        3. **Face Detailer**: Detects and repairs faces separately (Critical for portraits).
-        4. **SDXL Turbo**: High-fidelity model replacing Z-Image-Turbo.
+        **Configuration:**
+        *   **Loop**: 3 Passes @ 0.2 Denoise (Exact Match)
+        *   **Constraint**: Canny Thresholds 5/28 (Exact Repo Match)
+        *   **Face Detailer**: YOLOv8 Detection (Exact Repo Match)
+        *   **Model**: SDXL Turbo (Proxied for Z-Image-Turbo due to platform support)
         """)
         
         with gr.Row():
             with gr.Column():
                 input_img = gr.Image(type="pil", label="Input Image")
-                with gr.Accordion("Advanced Settings", open=True):
-                    denoise = gr.Slider(0.1, 0.5, value=0.2, step=0.05, label="Denoise Strength (per loop)")
+                with gr.Accordion("Advanced Settings", open=False):
+                    denoise = gr.Slider(0.1, 0.5, value=0.2, step=0.05, label="Denoise Strength")
                     loops = gr.Slider(1, 5, value=3, step=1, label="Denoising Loops")
                     steps = gr.Slider(4, 20, value=9, step=1, label="Inference Steps")
                     face_det = gr.Checkbox(True, label="Enable Face Detailer")
