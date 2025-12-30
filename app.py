@@ -101,14 +101,37 @@ def remove_watermark(input_image):
     finally:
         proc.terminate()
 
-# Simple UI
-view = gr.Interface(
-    fn=remove_watermark,
-    inputs=gr.Image(type="pil", label="Upload AI Generated Image"),
-    outputs=gr.Image(type="pil", label="Bypass Result"),
-    title="SynthID Bypass (Exact ComfyUI Replication)",
-    description="This Space replicates the research paper 'Synthid-Bypass' using the exact Z-Image-Turbo models. Note: Initial boot takes ~5 minutes to download 10GB of models."
-)
+# Premium UI with Fixed Height and No Share Buttons
+css = """
+#container {
+    max-width: 1200px;
+    margin: 0 auto;
+}
+.image-preview {
+    max-height: 512px !important;
+}
+footer {display: none !important;}
+"""
+
+with gr.Blocks(css=css, title="SynthID Bypass") as demo:
+    with gr.Column(elem_id="container"):
+        gr.Markdown("# SynthID Bypass (Exact ComfyUI Replication)")
+        gr.Markdown("Replicating 'Synthid-Bypass' with exact Z-Image-Turbo models. Note: Initial boot takes ~5 minutes to download 10GB of models.")
+        
+        with gr.Row():
+            with gr.Column():
+                input_img = gr.Image(type="pil", label="Input Image", height=512)
+            with gr.Column():
+                output_img = gr.Image(type="pil", label="Reconstructed Image (Bypass)", height=512, interactive=False)
+        
+        submit_btn = gr.Button("Remove Watermark", variant="primary")
+        
+        submit_btn.click(
+            fn=remove_watermark,
+            inputs=[input_img],
+            outputs=[output_img]
+        )
 
 if __name__ == "__main__":
-    view.launch()
+    # Disable flagging and share to keep UI clean
+    demo.launch(show_api=False)
