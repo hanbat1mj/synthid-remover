@@ -8,7 +8,6 @@ from diffusers.utils import load_image
 import spaces
 
 # Initialize models
-@spaces.GPU
 def initialize_models():
     """Initialize the diffusion models and ControlNet"""
     try:
@@ -65,7 +64,7 @@ def get_canny_edge(image, low_threshold=100, high_threshold=200):
     
     return Image.fromarray(edges_rgb)
 
-@spaces.GPU
+@spaces.GPU(duration=60)  # ZeroGPU: allocate GPU for 60 seconds
 def remove_synthid_watermark(
     input_image,
     denoise_strength=0.15,
