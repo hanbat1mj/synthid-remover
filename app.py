@@ -131,11 +131,13 @@ def remove_synthid_watermark(
             progress(0.3 + (pass_num / num_passes) * 0.6, 
                     desc=f"Denoising pass {pass_num + 1}/{num_passes}...")
             
-            # Convert current image to latent and back with low denoise
+            # CRITICAL: Use img2img mode - pass the actual image, not just Canny edges
+            # The ControlNet pipeline supports both image and control_image parameters
             output = pipeline(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
-                image=canny_image,
+                image=current_image,  # The actual image to denoise (img2img)
+                control_image=canny_image,  # Canny edges for structure preservation
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale,
                 controlnet_conditioning_scale=controlnet_conditioning_scale,
