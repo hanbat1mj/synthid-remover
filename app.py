@@ -59,7 +59,7 @@ def setup():
         {"repo": "alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union", "file": "Z-Image-Turbo-Fun-Controlnet-Union.safetensors", "dest": "models/controlnet/Z-Image-Turbo-Fun-Controlnet-Union.safetensors"},
         {"repo": "deepghs/yolo-face", "file": "yolov8n-face/model.pt", "dest": "models/ultralytics/bbox/yolov8n-face.pt"},
         # SAM model for FaceDetailer
-        {"repo": "BlinkDL/temp-models", "file": "sam_vit_b_01ec64.pth", "dest": "models/sams/sam_vit_b_01ec64.pth"}
+        {"repo": "YouLiXiya/YL-SAM", "file": "sam_vit_b_01ec64.pth", "dest": "models/sams/sam_vit_b_01ec64.pth"}
     ]
 
     print("Hydrating models via HF_TRANSFER...")
