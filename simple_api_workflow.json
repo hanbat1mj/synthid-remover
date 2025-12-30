@@ -380,7 +380,7 @@
         "581",
         0
       ],
-      "filename_prefix": "Zimage_Img2Img/ComfyUI_"
+      "filename_prefix": "output"
     }
   }
 }
