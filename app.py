@@ -36,6 +36,7 @@ def setup():
     # 2. Setup Custom Nodes
     nodes = [
         "https://github.com/ltdrdata/ComfyUI-Impact-Pack",
+        "https://github.com/ltdrdata/ComfyUI-Impact-Subpack",
         "https://github.com/wildminder/ComfyUI-dype",
         "https://github.com/rgthree/rgthree-comfy",
         "https://github.com/BadCafeCode/masquerade-nodes-comfyui",
@@ -46,25 +47,29 @@ def setup():
     custom_nodes_path = os.path.join(COMFYUI_DIR, "custom_nodes")
     os.makedirs(custom_nodes_path, exist_ok=True)
 
-    # Pin Impact Pack to exact commit used in reference workflow
+    # Pin Impact packs to exact versions used in reference workflow
     IMPACT_PACK_COMMIT = "61bd8397a18e7e7668e6a24e95168967768c2bed"
+    IMPACT_SUBPACK_VERSION = "v1.3.5"
 
     for url in nodes:
         name = url.split("/")[-1]
         node_dest = os.path.join(custom_nodes_path, name)
         if not os.path.exists(node_dest):
             subprocess.run(["git", "clone", url, node_dest], check=True)
-            # Checkout specific commit for Impact Pack to match reference workflow
-            if "Impact-Pack" in name:
+            # Checkout specific versions for Impact packs to match reference workflow
+            if name == "ComfyUI-Impact-Pack":
                 subprocess.run(["git", "checkout", IMPACT_PACK_COMMIT], cwd=node_dest, check=True)
                 print(f"Pinned Impact Pack to commit {IMPACT_PACK_COMMIT}")
+            elif name == "ComfyUI-Impact-Subpack":
+                subprocess.run(["git", "checkout", IMPACT_SUBPACK_VERSION], cwd=node_dest, check=True)
+                print(f"Pinned Impact Subpack to version {IMPACT_SUBPACK_VERSION}")
 
     # 3. Models Download logic (Using hf_transfer for speed)
     model_configs = [
         {"repo": "Comfy-Org/z_image_turbo", "file": "split_files/vae/ae.safetensors", "dest": "models/vae/ae.safetensors"},
         {"repo": "Comfy-Org/z_image_turbo", "file": "split_files/diffusion_models/z_image_turbo_bf16.safetensors", "dest": "models/diffusion_models/z_image_turbo_bf16.safetensors"},
         {"repo": "Comfy-Org/z_image_turbo", "file": "split_files/text_encoders/qwen_3_4b.safetensors", "dest": "models/text_encoders/qwen_3_4b.safetensors"},
-        {"repo": "alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union", "file": "Z-Image-Turbo-Fun-Controlnet-Union.safetensors", "dest": "models/controlnet/Z-Image-Turbo-Fun-Controlnet-Union.safetensors"},
+        {"repo": "alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union", "file": "Z-Image-Turbo-Fun-Controlnet-Union.safetensors", "dest": "models/model_patches/Z-Image-Turbo-Fun-Controlnet-Union.safetensors"},
         {"repo": "deepghs/yolo-face", "file": "yolov8n-face/model.pt", "dest": "models/ultralytics/bbox/yolov8n-face.pt"},
         # SAM model for FaceDetailer
         {"repo": "YouLiXiya/YL-SAM", "file": "sam_vit_b_01ec64.pth", "dest": "models/sams/sam_vit_b_01ec64.pth"}
