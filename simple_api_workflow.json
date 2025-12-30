@@ -1,0 +1,331 @@
+{
+  "506": {
+    "class_type": "SeedVR2LoadVAEModel",
+    "inputs": {}
+  },
+  "505": {
+    "class_type": "SeedVR2LoadDiTModel",
+    "inputs": {}
+  },
+  "10": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "214",
+        0
+      ]
+    }
+  },
+  "8": {
+    "class_type": "VAEEncode",
+    "inputs": {
+      "pixels": [
+        "507",
+        0
+      ],
+      "vae": [
+        "12",
+        0
+      ]
+    }
+  },
+  "61": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "58",
+        0
+      ],
+      "vae": [
+        "12",
+        0
+      ]
+    }
+  },
+  "12": {
+    "class_type": "VAELoader",
+    "inputs": {}
+  },
+  "9": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "214",
+        0
+      ]
+    }
+  },
+  "15": {
+    "class_type": "UNETLoader",
+    "inputs": {}
+  },
+  "6": {
+    "class_type": "ModelSamplingAuraFlow",
+    "inputs": {
+      "model": [
+        "15",
+        0
+      ]
+    }
+  },
+  "513": {
+    "class_type": "Get Image Size",
+    "inputs": {
+      "image": [
+        "507",
+        0
+      ]
+    }
+  },
+  "512": {
+    "class_type": "DyPE_FLUX",
+    "inputs": {
+      "model": [
+        "6",
+        0
+      ],
+      "width": [
+        "513",
+        0
+      ],
+      "height": [
+        "513",
+        1
+      ]
+    }
+  },
+  "558": {
+    "class_type": "Note",
+    "inputs": {}
+  },
+  "3": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": [
+        "580",
+        0
+      ],
+      "positive": [
+        "9",
+        0
+      ],
+      "negative": [
+        "10",
+        0
+      ],
+      "latent_image": [
+        "8",
+        0
+      ],
+      "denoise": [
+        "572",
+        0
+      ]
+    }
+  },
+  "35": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": [
+        "580",
+        0
+      ],
+      "positive": [
+        "9",
+        0
+      ],
+      "negative": [
+        "10",
+        0
+      ],
+      "latent_image": [
+        "3",
+        0
+      ],
+      "denoise": [
+        "572",
+        0
+      ]
+    }
+  },
+  "58": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": [
+        "580",
+        0
+      ],
+      "positive": [
+        "9",
+        0
+      ],
+      "negative": [
+        "10",
+        0
+      ],
+      "latent_image": [
+        "35",
+        0
+      ],
+      "denoise": [
+        "572",
+        0
+      ]
+    }
+  },
+  "401": {
+    "class_type": "ModelPatchLoader",
+    "inputs": {}
+  },
+  "507": {
+    "class_type": "SeedVR2VideoUpscaler",
+    "inputs": {
+      "image": [
+        "573",
+        0
+      ],
+      "dit": [
+        "505",
+        0
+      ],
+      "vae": [
+        "506",
+        0
+      ]
+    }
+  },
+  "214": {
+    "class_type": "CLIPLoader",
+    "inputs": {}
+  },
+  "573": {
+    "class_type": "ImageScaleToTotalPixels",
+    "inputs": {
+      "image": [
+        "11",
+        0
+      ]
+    }
+  },
+  "574": {
+    "class_type": "ImpactSwitch",
+    "inputs": {
+      "input1": [
+        "507",
+        0
+      ],
+      "input2": [
+        "573",
+        0
+      ]
+    }
+  },
+  "575": {
+    "class_type": "Note",
+    "inputs": {}
+  },
+  "576": {
+    "class_type": "Note",
+    "inputs": {}
+  },
+  "572": {
+    "class_type": "Float",
+    "inputs": {}
+  },
+  "577": {
+    "class_type": "Image Comparer (rgthree)",
+    "inputs": {
+      "image_a": [
+        "581",
+        0
+      ],
+      "image_b": [
+        "11",
+        0
+      ]
+    }
+  },
+  "11": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "03.png"
+    }
+  },
+  "578": {
+    "class_type": "UltralyticsDetectorProvider",
+    "inputs": {}
+  },
+  "579": {
+    "class_type": "Canny",
+    "inputs": {
+      "image": [
+        "574",
+        0
+      ]
+    }
+  },
+  "580": {
+    "class_type": "QwenImageDiffsynthControlnet",
+    "inputs": {
+      "model": [
+        "512",
+        0
+      ],
+      "model_patch": [
+        "401",
+        0
+      ],
+      "vae": [
+        "12",
+        0
+      ],
+      "image": [
+        "579",
+        0
+      ]
+    }
+  },
+  "581": {
+    "class_type": "FaceDetailer",
+    "inputs": {
+      "image": [
+        "61",
+        0
+      ],
+      "model": [
+        "6",
+        0
+      ],
+      "clip": [
+        "214",
+        0
+      ],
+      "vae": [
+        "12",
+        0
+      ],
+      "positive": [
+        "9",
+        0
+      ],
+      "negative": [
+        "10",
+        0
+      ],
+      "bbox_detector": [
+        "578",
+        0
+      ]
+    }
+  },
+  "62": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "581",
+        0
+      ],
+      "filename_prefix": "Zimage_Img2Img/ComfyUI_"
+    }
+  }
+}
