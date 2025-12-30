@@ -42,3 +42,4 @@ spandrel
 pydantic
 pydantic-settings
 msgpack
+omegaconf
