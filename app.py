@@ -115,7 +115,7 @@ footer {display: none !important;}
 
 with gr.Blocks(css=css, title="SynthID Bypass") as demo:
     with gr.Column(elem_id="container"):
-        gr.Markdown("# SynthID Bypass (Exact ComfyUI Replication)")
+        gr.Markdown("# SynthID Bypass")
         gr.Markdown("Replicating 'Synthid-Bypass' with exact Z-Image-Turbo models. Note: Initial boot takes ~5 minutes to download 10GB of models.")
         
         with gr.Row():
