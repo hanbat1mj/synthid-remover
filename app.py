@@ -71,8 +71,10 @@ def setup():
         {"repo": "Comfy-Org/z_image_turbo", "file": "split_files/text_encoders/qwen_3_4b.safetensors", "dest": "models/text_encoders/qwen_3_4b.safetensors"},
         {"repo": "alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union", "file": "Z-Image-Turbo-Fun-Controlnet-Union.safetensors", "dest": "models/model_patches/Z-Image-Turbo-Fun-Controlnet-Union.safetensors"},
         {"repo": "deepghs/yolo-face", "file": "yolov8n-face/model.pt", "dest": "models/ultralytics/bbox/yolov8n-face.pt"},
-        # SAM model for FaceDetailer
-        {"repo": "YouLiXiya/YL-SAM", "file": "sam_vit_b_01ec64.pth", "dest": "models/sams/sam_vit_b_01ec64.pth"}
+        {"repo": "YouLiXiya/YL-SAM", "file": "sam_vit_b_01ec64.pth", "dest": "models/sams/sam_vit_b_01ec64.pth"},
+        # SeedVR2 models (15.3GB DiT + 672MB VAE)
+        {"repo": "numz/SeedVR2_comfyUI", "file": "seedvr2_ema_7b_sharp_fp16.safetensors", "dest": "models/SEEDVR2/seedvr2_ema_7b_sharp_fp16.safetensors"},
+        {"repo": "numz/SeedVR2_comfyUI", "file": "ema_vae_fp16.safetensors", "dest": "models/SEEDVR2/ema_vae_fp16.safetensors"}
     ]
 
     print("Hydrating models via HF_TRANSFER...")
