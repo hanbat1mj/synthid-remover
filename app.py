@@ -20,8 +20,13 @@ face_detector = None
 
 def initialize_face_detector():
     """Initialize MediaPipe face detector"""
-    mp_face_detection = mp.solutions.face_detection
-    return mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5)
+    try:
+        import mediapipe as mp
+        mp_face_detection = mp.solutions.face_detection
+        return mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5)
+    except Exception as e:
+        print(f"Failed to initialize Face Detector: {e}")
+        return None
 
 def initialize_models():
     """Initialize SDXL Turbo and ControlNet"""
