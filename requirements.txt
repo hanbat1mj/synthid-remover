@@ -27,3 +27,4 @@ rotary-embedding-torch
 onnxruntime
 segment-anything
 hf_transfer
+torchsde
