@@ -93,6 +93,10 @@ def process_face_detailer(image, pipe, prompt, negative_prompt, steps, strength,
     if face_detector is None:
         face_detector = initialize_face_detector()
     
+    if face_detector is None:
+        print("Face detector failed to initialize. Skipping FaceDetailer.")
+        return image
+    
     img_np = np.array(image)
     results = face_detector.process(img_np)
     
