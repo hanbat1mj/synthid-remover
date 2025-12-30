@@ -143,6 +143,14 @@ def convert_to_api(web_workflow):
         elif class_type == "LoadImage" and w_values:
             inputs["image"] = w_values[0]
             inputs["upload"] = w_values[1] if len(w_values) > 1 else "image"
+        elif class_type == "ModelSamplingAuraFlow" and w_values:
+            inputs["shift"] = w_values[0]
+        elif class_type == "DyPE_FLUX" and len(w_values) >= 4:
+            inputs["width"] = w_values[0]
+            inputs["height"] = w_values[1]
+            inputs["preset"] = w_values[2]
+            inputs["pe_type"] = w_values[3]
+            # Advanced Peet's parameters... usually defaults are okay but we can add more if needed
             
         # Add any other widget values that might be present
         # This is a guestimate, but is usually how API conversion works
