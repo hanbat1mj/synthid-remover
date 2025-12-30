@@ -11,6 +11,10 @@ from huggingface_hub import hf_hub_download
 
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
+# Suppress unnecessary warnings
+os.environ["PYTHONWARNINGS"] = "ignore"
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+
 # Configuration
 REPO_URL = "https://github.com/00quebec/Synthid-Bypass"
 COMFYUI_URL = "https://github.com/comfyanonymous/ComfyUI"
@@ -26,12 +30,12 @@ def setup():
     if os.path.exists(os.path.join(COMFYUI_DIR, "models/vae/ae.safetensors")):
         print("--- ENVIRONMENT ALREADY INITIALIZED ---")
         return
-        
-    print("--- FIRST TIME SETUP STARTING (Approx 2-3 mins) ---")
-    
+
+    print("--- FIRST TIME SETUP STARTING ---")
+
     # 1. Clone Repos
-    subprocess.run(["git", "clone", COMFYUI_URL, COMFYUI_DIR], check=True)
-    subprocess.run(["git", "clone", REPO_URL, BYPASS_REPO_DIR], check=True)
+    subprocess.run(["git", "clone", COMFYUI_URL, COMFYUI_DIR], check=True, capture_output=True)
+    subprocess.run(["git", "clone", REPO_URL, BYPASS_REPO_DIR], check=True, capture_output=True)
     
     # 2. Setup Custom Nodes
     nodes = [
@@ -55,14 +59,21 @@ def setup():
         name = url.split("/")[-1]
         node_dest = os.path.join(custom_nodes_path, name)
         if not os.path.exists(node_dest):
-            subprocess.run(["git", "clone", url, node_dest], check=True)
+            subprocess.run(["git", "clone", url, node_dest], check=True, capture_output=True)
             # Checkout specific versions for Impact packs to match reference workflow
             if name == "ComfyUI-Impact-Pack":
-                subprocess.run(["git", "checkout", IMPACT_PACK_COMMIT], cwd=node_dest, check=True)
-                print(f"Pinned Impact Pack to commit {IMPACT_PACK_COMMIT}")
+                subprocess.run(["git", "checkout", IMPACT_PACK_COMMIT], cwd=node_dest, check=True, capture_output=True)
             elif name == "ComfyUI-Impact-Subpack":
-                subprocess.run(["git", "checkout", IMPACT_SUBPACK_VERSION], cwd=node_dest, check=True)
-                print(f"Pinned Impact Subpack to version {IMPACT_SUBPACK_VERSION}")
+                subprocess.run(["git", "checkout", IMPACT_SUBPACK_VERSION], cwd=node_dest, check=True, capture_output=True)
+
+    print("✓ Custom nodes installed")
+
+    # Install performance optimizations (SageAttention, Flash Attention)
+    print("Installing performance optimizations...")
+    subprocess.run([
+        sys.executable, "-m", "pip", "install",
+        "sageattention", "flash-attn", "--no-cache-dir"
+    ], capture_output=True, check=False)  # Don't fail if these can't install
 
     # 3. Models Download logic (Using hf_transfer for speed)
     model_configs = [
@@ -77,27 +88,23 @@ def setup():
         {"repo": "numz/SeedVR2_comfyUI", "file": "ema_vae_fp16.safetensors", "dest": "models/SEEDVR2/ema_vae_fp16.safetensors"}
     ]
 
-    print("Hydrating models via HF_TRANSFER...")
-    for cfg in model_configs:
+    print("Downloading models (fast with HF_TRANSFER)...")
+    for i, cfg in enumerate(model_configs, 1):
         out_path = os.path.join(COMFYUI_DIR, cfg['dest'])
         if not os.path.exists(out_path):
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
-            print(f"Syncing {cfg['file']}...")
-            # Use local_dir to avoid symlink issues in ZeroGPU workers
-            dest_dir = os.path.dirname(out_path)
+            print(f"  [{i}/{len(model_configs)}] {cfg['file'].split('/')[-1]}")
             hf_hub_download(
-                repo_id=cfg['repo'], 
+                repo_id=cfg['repo'],
                 filename=cfg['file'],
                 local_dir=COMFYUI_DIR,
                 local_dir_use_symlinks=False
             )
-            # hf_hub_download with local_dir might save to a different path if nested
-            # We ensure it's at the expected 'dest'
             actual_downloaded_path = os.path.join(COMFYUI_DIR, cfg['file'])
             if actual_downloaded_path != out_path and os.path.exists(actual_downloaded_path):
                 os.rename(actual_downloaded_path, out_path)
 
-    print("--- SETUP COMPLETE ---")
+    print("✓ Setup complete")
 
 def convert_to_api(web_workflow):
     """
