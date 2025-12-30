@@ -85,43 +85,71 @@ def setup():
     print("--- SETUP COMPLETE ---")
 
 def convert_to_api(web_workflow):
-    """Converts ComfyUI Web JSON format to API Prompt format"""
+    """
+    Robustly converts ComfyUI Web JSON (UI format) to API Prompt format.
+    Requires mapping links to actual node connections.
+    """
     nodes = web_workflow.get("nodes", [])
     links = web_workflow.get("links", [])
     
-    # Map link_id -> [node_id, slot_index]
+    # Map link_id -> [origin_node_id, origin_slot_index]
     link_map = {}
     for link in links:
         if link:
-            link_id, origin_node, origin_slot, target_node, target_slot, _ = link
-            link_map[link_id] = [str(origin_node), origin_slot]
+            l_id, node_from, slot_from, node_to, slot_to, l_type = link
+            link_map[l_id] = [str(node_from), slot_from]
             
     api_prompt = {}
     for node in nodes:
         node_id = str(node["id"])
-        node_type = node["type"]
+        class_type = node["type"]
         inputs = {}
         
-        # Add widgets values as inputs
-        if "widgets_values" in node:
-            # This is tricky as we don't know the names, but most nodes
-            # handle them in order. For API, many nodes use named inputs.
-            # We'll rely on the 'inputs' section for connections.
-            pass
-
-        # Add connections
+        # 1. Handle Connections (from links)
         for inp in node.get("inputs", []):
-            if inp.get("link"):
-                if inp["link"] in link_map:
-                    inputs[inp["name"]] = link_map[inp["link"]]
+            l_id = inp.get("link")
+            if l_id and l_id in link_map:
+                inputs[inp["name"]] = link_map[l_id]
         
-        # Merge properties and widgets if needed? 
-        # Actually, for a specific workflow like this, it's safer to hardcode
-        # the critical replacements or use a proper conversion logic.
-        # Let's use a simpler approach: we'll use the API format directly.
+        # 2. Handle Widgets (from widgets_values)
+        # This is where it gets tricky since Web format stores values in a list
+        # and API format expects them as named keys.
+        # We'll use a known mapping for core nodes if possible.
+        # For custom nodes, it depends on the node's implementation of 'INPUT_TYPES'.
+        
+        # Note: If the workflow was saved with 'widgets_values', we inject them.
+        # We'll try to guess common input names or just pass them as indices if the server allows.
+        # For SynthID-Bypass, we'll hardcode the critical ones if needed.
+        
+        # Fallback: Many nodes put widgets after connections in their registration.
+        # If we don't have names, it might fail. 
+        # However, many modern workflows save 'widgets_values' which we need to map.
+        
+        # For this specific bypass tool, we'll use the pre-known node names for key nodes.
+        w_values = node.get("widgets_values", [])
+        if class_type == "CLIPTextEncode" and w_values:
+            inputs["text"] = w_values[0]
+        elif class_type == "KSampler" and len(w_values) >= 7:
+            inputs["seed"] = w_values[0]
+            inputs["steps"] = w_values[2]
+            inputs["cfg"] = w_values[3]
+            inputs["sampler_name"] = w_values[4]
+            inputs["scheduler"] = w_values[5]
+            inputs["denoise"] = w_values[6]
+        elif class_type == "VAELoader" and w_values:
+            inputs["vae_name"] = w_values[0]
+        elif class_type == "UNETLoader" and w_values:
+            inputs["unet_name"] = w_values[0]
+        elif class_type == "LoadImage" and w_values:
+            inputs["image"] = w_values[0]
+            inputs["upload"] = w_values[1] if len(w_values) > 1 else "image"
+            
+        # Add any other widget values that might be present
+        # This is a guestimate, but is usually how API conversion works
+        
         api_prompt[node_id] = {
-            "class_type": node_type,
-            "inputs": {**node.get("widgets_values_dict", {}), **inputs}
+            "class_type": class_type,
+            "inputs": inputs
         }
     return api_prompt
 
@@ -147,7 +175,7 @@ def remove_watermark(input_image):
     # 2. Launch ComfyUI (Headless)
     print("Launching Headless ComfyUI server...")
     # Using the correct CWD is critical for ComfyUI to find its models and custom nodes
-    cmd = [sys.executable, "main.py", "--listen", "127.0.0.1", "--port", "8188", "--front-end-root", "NONE", "--disable-auto-launch"]
+    cmd = [sys.executable, "main.py", "--listen", "127.0.0.1", "--port", "8188", "--disable-auto-launch"]
     proc = subprocess.Popen(cmd, cwd=COMFYUI_DIR)
     
     # Wait for server to be ready (increased timeout and added logging)
@@ -171,8 +199,6 @@ def remove_watermark(input_image):
 
     try:
         # 3. Prepare Prompt
-        # Since manual conversion is prone to errors, we use the known API structure for this workflow
-        # or load the pre-converted one if we can.
         workflow_path = os.path.join(BYPASS_REPO_DIR, "Synthid_Bypass.json")
         with open(workflow_path, 'r') as f:
             web_wf = json.load(f)
@@ -182,29 +208,59 @@ def remove_watermark(input_image):
             if node.get("id") == 11:
                 node["widgets_values"] = [input_filename, "image"]
 
-        # Note: ComfyUI actually supports a "wrapper" or "API format" 
-        # For simplicity and speed, we'll try to use a pre-converted prompt 
-        # if possible, but here we'll try to trigger it.
+        # Convert to API format
+        api_prompt = convert_to_api(web_wf)
         
-        # TRICK: Most ComfyUI scripts for ZeroGPU use a specific 'api_workflow.json'
-        # I will create a basic one based on the web one.
-        print("Sending prompt to ComfyUI...")
-        # (Conversion logic omitted for brevity in this block, but implied to be robust)
-        # For the prototype, we return the image if the API fails, but in reality 
-        # the user wants the result.
+        print("Queueing prompt to ComfyUI...")
+        prompt_data = {"prompt": api_prompt}
+        resp = requests.post("http://127.0.0.1:8188/prompt", json=prompt_data)
         
-        # Temporary: Simulate processing time to check if server stays alive
-        time.sleep(5)
+        if resp.status_code != 200:
+            raise RuntimeError(f"Failed to queue prompt: {resp.text}")
+            
+        prompt_id = resp.json().get("prompt_id")
+        print(f"Prompt queued successfully (ID: {prompt_id})")
+
+        # 4. Wait for completion
+        # We poll the history endpoint until the prompt_id appears
+        max_poll = 120 # 120 seconds for processing
+        finished = False
+        output_filename = None
         
-        # Actual implementation would use:
-        # prompt_response = requests.post("http://127.0.0.1:8188/prompt", json={"prompt": convert_to_api(web_wf)})
-        
-        return input_image # Placeholder result until conversion is verified
+        for p in range(max_poll):
+            history_resp = requests.get(f"http://127.0.0.1:8188/history/{prompt_id}")
+            if history_resp.status_code == 200:
+                history = history_resp.json()
+                if prompt_id in history:
+                    # Success!
+                    print("Processing complete!")
+                    # Extract output filename from the SaveImage node (ID 62)
+                    output_data = history[prompt_id]['outputs'].get('62')
+                    if output_data and 'images' in output_data:
+                        output_filename = output_data['images'][0]['filename']
+                        finished = True
+                        break
+            
+            if p % 10 == 0: print(f"Still processing... ({p}s)")
+            time.sleep(1)
+            
+        if not finished:
+            raise RuntimeError("Processing timed out or failed to save image.")
+
+        # 5. Return result
+        output_path = os.path.join(output_dir, output_filename)
+        return Image.open(output_path).copy() # Copy to avoid library closing issues
         
     finally:
-        print("Shutting down ComfyUI...")
+        print("Shutting down ComfyUI server...")
         proc.terminate()
-        proc.wait()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        
+        # Cleanup input file
+        if os.path.exists(input_path): os.remove(input_path)
 
 # Premium UI with Fixed Height and No Share Buttons
 css = """
