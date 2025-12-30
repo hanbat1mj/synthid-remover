@@ -219,7 +219,7 @@
       "color_correction": "fixed",
       "batch_size": 2160,
       "uniform_batch_size": 0,
-      "resolution": 1,
+      "resolution": 1080,
       "max_resolution": false
     }
   },
@@ -310,6 +310,12 @@
       "strength": 1.2
     }
   },
+  "578": {
+    "class_type": "UltralyticsDetectorProvider",
+    "inputs": {
+      "model_name": "bbox/yolov8n-face.pt"
+    }
+  },
   "581": {
     "class_type": "FaceDetailer",
     "inputs": {
@@ -335,6 +341,10 @@
       ],
       "negative": [
         "10",
+        0
+      ],
+      "bbox_detector": [
+        "578",
         0
       ],
       "guide_size": 256,
