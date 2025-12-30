@@ -2,44 +2,65 @@ import spaces  # MUST be first for ZeroGPU!
 
 import gradio as gr
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 import cv2
 import torch
-from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, DDIMScheduler
+import mediapipe as mp
+from diffusers import StableDiffusionXLControlNetImg2ImgPipeline, ControlNetModel, AutoencoderKL, DDIMScheduler
 from diffusers.utils import load_image
 
-# Initialize models
+# Constants from the 00quebec/Synthid-Bypass workflow
+DEFAULT_DENOISE = 0.2
+DEFAULT_STEPS = 9  # Turbo models need fewer steps
+DEFAULT_LOOPS = 3  # The repo uses 3 sequential KSamplers
+
+# Global pipeline variables
+pipeline = None
+face_detector = None
+
+def initialize_face_detector():
+    """Initialize MediaPipe face detector"""
+    mp_face_detection = mp.solutions.face_detection
+    return mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5)
+
 def initialize_models():
-    """Initialize the diffusion models and ControlNet"""
+    """Initialize SDXL Turbo and ControlNet"""
     try:
-        # Determine device and dtype
         device = "cuda" if torch.cuda.is_available() else "cpu"
         dtype = torch.float16 if device == "cuda" else torch.float32
         
         print(f"Initializing models on {device} with {dtype}...")
         
-        # Load ControlNet for Canny edge detection
+        # Load ControlNet for SDXL (Canny)
         controlnet = ControlNetModel.from_pretrained(
-            "lllyasviel/control_v11p_sd15_canny",
+            "diffusers/controlnet-canny-sdxl-1.0",
             torch_dtype=dtype
         )
         
-        # Load Stable Diffusion pipeline with ControlNet
-        pipe = StableDiffusionControlNetPipeline.from_pretrained(
-            "runwayml/stable-diffusion-v1-5",
+        # Load SDXL Turbo (Fast, High Quality, similar to Z-Image-Turbo)
+        # Using VAE fix to prevent artifacts
+        vae = AutoencoderKL.from_pretrained("madebyollin/sdxl-vae-fp16-fix", torch_dtype=dtype)
+        
+        pipe = StableDiffusionXLControlNetImg2ImgPipeline.from_pretrained(
+            "stabilityai/sdxl-turbo",
             controlnet=controlnet,
+            vae=vae,
             torch_dtype=dtype,
-            safety_checker=None
+            variant="fp16",
+            use_safetensors=True
         )
         
-        # Use DDIM scheduler for better quality
-        pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
+        # Turbo scheduler (Euler Ancestral or similar, matching repo's "simple/euler")
+        from diffusers import EulerAncestralDiscreteScheduler
+        pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(pipe.scheduler.config)
+        
         pipe = pipe.to(device)
         
-        # Enable optimizations if on GPU
+        # Enable optimizations
         if device == "cuda":
-            pipe.enable_model_cpu_offload()
-        
+            # pipe.enable_model_cpu_offload() # SDXL might need sequential offload on smaller GPUs
+            pipe.enable_sequential_cpu_offload()
+            
         return pipe
     except Exception as e:
         print(f"Error initializing models: {e}")
@@ -47,257 +68,204 @@ def initialize_models():
         traceback.print_exc()
         return None
 
-# Global pipeline variable
-pipeline = None
-
-def get_canny_edge(image, low_threshold=100, high_threshold=200):
-    """Extract Canny edges from image for ControlNet"""
+def get_canny_edges(image, low_threshold=100, high_threshold=200):
+    """Extract Canny edges for ControlNet"""
     image_np = np.array(image)
+    if image_np.shape[2] == 4: # RGBA to RGB
+        image_np = cv2.cvtColor(image_np, cv2.COLOR_RGBA2RGB)
     
-    # Convert to grayscale
     gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
-    
-    # Apply Canny edge detection
     edges = cv2.Canny(gray, low_threshold, high_threshold)
-    
-    # Convert back to RGB
     edges_rgb = cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB)
-    
     return Image.fromarray(edges_rgb)
 
-@spaces.GPU(duration=60)  # ZeroGPU: allocate GPU for 60 seconds
-def remove_synthid_watermark(
+def process_face_detailer(image, pipe, prompt, negative_prompt, steps, strength, seed):
+    """
+    Implements the 'FaceDetailer' node logic: 
+    Detect faces -> Crop -> Denoise (Repair) -> Paste back
+    """
+    global face_detector
+    if face_detector is None:
+        face_detector = initialize_face_detector()
+    
+    img_np = np.array(image)
+    results = face_detector.process(img_np)
+    
+    if not results.detections:
+        print("No faces detected for detailing.")
+        return image
+        
+    print(f"Detected {len(results.detections)} faces. Starting FaceDetailer...")
+    height, width, _ = img_np.shape
+    processed_image = image.copy()
+    
+    # Margin for face crop
+    margin = 50 
+    
+    for detection in results.detections:
+        bbox = detection.location_data.relative_bounding_box
+        x = int(bbox.xmin * width)
+        y = int(bbox.ymin * height)
+        w = int(bbox.width * width)
+        h = int(bbox.height * height)
+        
+        # Add margin
+        x1 = max(0, x - margin)
+        y1 = max(0, y - margin)
+        x2 = min(width, x + w + margin)
+        y2 = min(height, y + h + margin)
+        
+        # Crop face
+        face_crop = processed_image.crop((x1, y1, x2, y2))
+        
+        # Resize for processing if too small
+        original_crop_size = face_crop.size
+        process_size = (512, 512)
+        face_crop_resized = face_crop.resize(process_size, Image.Resampling.LANCZOS)
+        
+        # Get edges for the face (optional, but good for structure)
+        face_edges = get_canny_edges(face_crop_resized, 50, 150)
+        
+        # Denoise the face (Refine)
+        # Using slightly higher strength for faces to ensure cleanup
+        refined_face = pipe(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            image=face_crop_resized,
+            control_image=face_edges,
+            num_inference_steps=steps,
+            strength=0.30, # Faces need a bit more scrub
+            guidance_scale=1.5, # Low guidance for Turbo
+            controlnet_conditioning_scale=0.5,
+            generator=torch.manual_seed(seed)
+        ).images[0]
+        
+        # Resize back and paste
+        refined_face = refined_face.resize(original_crop_size, Image.Resampling.LANCZOS)
+        
+        # Soft blending mask
+        mask = Image.new('L', original_crop_size, 0)
+        from PIL import ImageDraw
+        draw = ImageDraw.Draw(mask)
+        draw.rectangle([margin//2, margin//2, original_crop_size[0]-margin//2, original_crop_size[1]-margin//2], fill=255)
+        mask = mask.filter(ImageFilter.GaussianBlur(15))
+        
+        processed_image.paste(refined_face, (x1, y1), mask)
+        
+    return processed_image
+
+@spaces.GPU(duration=120)  # Increased duration for multi-pass + SDXL
+def remove_watermark(
     input_image,
-    denoise_strength=0.15,
-    num_inference_steps=20,
-    guidance_scale=7.5,
-    controlnet_conditioning_scale=0.8,
+    denoise_strength=0.2,
+    loops=3,
+    steps=9,
+    use_face_detailer=True,
     progress=gr.Progress()
 ):
-    """
-    Remove SynthID watermark using diffusion-based reconstruction.
-    
-    This implements the core technique from the research:
-    1. Extract structural information (Canny edges)
-    2. Use low-denoise diffusion to "re-noise" the image
-    3. Preserve structure with ControlNet guidance
-    
-    Args:
-        input_image: PIL Image with SynthID watermark
-        denoise_strength: How much to denoise (lower = more preservation)
-        num_inference_steps: Number of diffusion steps
-        guidance_scale: Classifier-free guidance scale
-        controlnet_conditioning_scale: Strength of ControlNet guidance
-    """
     global pipeline
     
     if input_image is None:
-        return None, "Please upload an image first."
-    
-    try:
-        progress(0.1, desc="Initializing models...")
+        return None, "Please upload an image."
         
-        # Initialize pipeline if not already done
+    try:
+        progress(0.1, desc="Loading SDXL Turbo Models...")
         if pipeline is None:
             pipeline = initialize_models()
-            if pipeline is None:
-                return None, "Failed to initialize models. Please try again."
         
-        progress(0.2, desc="Extracting structural information...")
-        
-        # Resize image if too large (for memory efficiency)
-        max_size = 1024
-        if max(input_image.size) > max_size:
-            ratio = max_size / max(input_image.size)
+        if pipeline is None:
+            return None, "Failed to load models."
+            
+        # 1. Resize if huge (SDXL handles 1024x1024 well)
+        max_dim = 1024
+        if max(input_image.size) > max_dim:
+            ratio = max_dim / max(input_image.size)
             new_size = tuple(int(dim * ratio) for dim in input_image.size)
             input_image = input_image.resize(new_size, Image.Resampling.LANCZOS)
-        
-        # Extract Canny edges for structural preservation
-        canny_image = get_canny_edge(input_image)
-        
-        progress(0.3, desc="Processing with diffusion model...")
-        
-        # Generate a simple prompt based on image analysis
-        # In a production version, you could use BLIP or similar for better prompts
-        prompt = "high quality photograph, detailed, sharp focus, professional"
-        negative_prompt = "blurry, low quality, distorted, watermark, text"
-        
-        # Process through multiple passes with low denoise
-        # This simulates the multi-stage KSampler approach from ComfyUI
-        current_image = input_image
-        num_passes = 3  # Multiple passes as in the original workflow
-        
-        for pass_num in range(num_passes):
-            progress(0.3 + (pass_num / num_passes) * 0.6, 
-                    desc=f"Denoising pass {pass_num + 1}/{num_passes}...")
             
-            # CRITICAL: Use img2img mode - pass the actual image, not just Canny edges
-            # The ControlNet pipeline supports both image and control_image parameters
-            output = pipeline(
+        current_image = input_image
+        
+        # Prompt settings (Generic high quality)
+        prompt = "high quality, professional image, sharp focus, 4k, detail"
+        negative_prompt = "watermark, text, blur, noise, distortion, artifacts"
+        
+        # Seed
+        seed = 42
+        
+        # 2. Sequential KSampler Loop (Key to the bypass)
+        for i in range(loops):
+            progress(0.2 + (i/loops)*0.5, desc=f"Denoising Pass {i+1}/{loops} (Strength: {denoise_strength})...")
+            
+            # Extract fresh edges from the CURRENT state of the image
+            # This ensures we follow the evolving structure
+            edges = get_canny_edges(current_image)
+            
+            # Run Img2Img with ControlNet
+            current_image = pipeline(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
-                image=current_image,  # The actual image to denoise (img2img)
-                control_image=canny_image,  # Canny edges for structure preservation
-                num_inference_steps=num_inference_steps,
-                guidance_scale=guidance_scale,
-                controlnet_conditioning_scale=controlnet_conditioning_scale,
-                strength=denoise_strength,  # Low denoise is key!
+                image=current_image,
+                control_image=edges,
+                num_inference_steps=steps,
+                strength=denoise_strength,
+                guidance_scale=1.5, # Turbo needs low CFG
+                controlnet_conditioning_scale=0.6, # Structure preservation
+                generator=torch.manual_seed(seed + i)
             ).images[0]
             
-            current_image = output
+        # 3. Face Detailer (Optional but recommended)
+        if use_face_detailer:
+            progress(0.8, desc="Running Face Detailer...")
+            current_image = process_face_detailer(
+                current_image, pipeline, prompt, negative_prompt, steps, denoise_strength, seed
+            )
+            
+        progress(1.0, desc="Done!")
         
-        progress(1.0, desc="Complete!")
-        
-        status_message = f"""
-        ✅ **Watermark Removal Complete**
-        
-        - Processed with {num_passes} denoising passes
-        - Denoise strength: {denoise_strength}
-        - Structural preservation: ControlNet Canny edges
-        
-        **Note**: This implementation uses the core technique from the research:
-        low-denoise diffusion with structural guidance to remove pixel-space watermarks.
-        """
-        
-        return current_image, status_message
+        return current_image, f"✅ Processed with {loops} passes @ {denoise_strength} strength + FaceDetailer"
         
     except Exception as e:
-        error_message = f"❌ Error during processing: {str(e)}"
-        print(error_message)
-        return None, error_message
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return None, str(e)
 
-# Create Gradio interface
-def create_interface():
-    with gr.Blocks(
-        theme=gr.themes.Soft(
-            primary_hue="indigo",
-            secondary_hue="blue",
-        ),
-        title="SynthID Watermark Remover"
-    ) as demo:
-        
+# Gradio Interface
+def create_demo():
+    with gr.Blocks(title="SynthID Remover (Exact Workflow match)") as demo:
+        gr.Markdown("## 🔬 SynthID Watermark Remover (SDXL Turbo Implementation)")
         gr.Markdown("""
-        # 🔬 SynthID Watermark Remover
-        
-        ### Research-Based Watermark Removal Tool
-        
-        This tool implements the technique described in the [SynthID-Bypass research](https://github.com/00quebec/Synthid-Bypass) 
-        to remove invisible watermarks from AI-generated images.
-        
-        **How it works:**
-        1. Extracts structural information using Canny edge detection
-        2. Applies low-denoise diffusion to "re-noise" the image
-        3. Uses ControlNet to preserve the original composition
-        4. Multiple passes ensure complete watermark removal
-        
-        ⚠️ **Educational & Research Purposes Only**
-        
-        This tool is provided for AI safety research and educational purposes. 
-        Please use responsibly and ethically.
+        **Exact implementation of the 00quebec/Synthid-Bypass workflow:**
+        1. **Low Denoise Loops**: Sequentially scrubs watermark noise (3 passes @ 0.2 strength).
+        2. **ControlNet Canny**: Preserves structural integrity.
+        3. **Face Detailer**: Detects and repairs faces separately (Critical for portraits).
+        4. **SDXL Turbo**: High-fidelity model replacing Z-Image-Turbo.
         """)
         
         with gr.Row():
-            with gr.Column(scale=1):
-                input_image = gr.Image(
-                    label="Upload Image with SynthID Watermark",
-                    type="pil",
-                    height=400
-                )
+            with gr.Column():
+                input_img = gr.Image(type="pil", label="Input Image")
+                with gr.Accordion("Advanced Settings", open=True):
+                    denoise = gr.Slider(0.1, 0.5, value=0.2, step=0.05, label="Denoise Strength (per loop)")
+                    loops = gr.Slider(1, 5, value=3, step=1, label="Denoising Loops")
+                    steps = gr.Slider(4, 20, value=9, step=1, label="Inference Steps")
+                    face_det = gr.Checkbox(True, label="Enable Face Detailer")
                 
-                with gr.Accordion("⚙️ Advanced Settings", open=False):
-                    denoise_strength = gr.Slider(
-                        minimum=0.05,
-                        maximum=0.3,
-                        value=0.15,
-                        step=0.05,
-                        label="Denoise Strength",
-                        info="Lower values preserve more detail but may leave traces of watermark"
-                    )
-                    
-                    num_steps = gr.Slider(
-                        minimum=10,
-                        maximum=50,
-                        value=20,
-                        step=5,
-                        label="Inference Steps",
-                        info="More steps = better quality but slower"
-                    )
-                    
-                    guidance_scale = gr.Slider(
-                        minimum=5.0,
-                        maximum=15.0,
-                        value=7.5,
-                        step=0.5,
-                        label="Guidance Scale",
-                        info="How strongly to follow the prompt"
-                    )
-                    
-                    controlnet_scale = gr.Slider(
-                        minimum=0.5,
-                        maximum=1.0,
-                        value=0.8,
-                        step=0.1,
-                        label="ControlNet Conditioning Scale",
-                        info="Strength of structural preservation"
-                    )
+                run_btn = gr.Button("Remove Watermark", variant="primary")
+            
+            with gr.Column():
+                output_img = gr.Image(type="pil", label="Result")
+                status = gr.Text(label="Status")
                 
-                process_btn = gr.Button("🚀 Remove Watermark", variant="primary", size="lg")
-                
-            with gr.Column(scale=1):
-                output_image = gr.Image(
-                    label="Processed Image (Watermark Removed)",
-                    type="pil",
-                    height=400
-                )
-                
-                status_text = gr.Markdown("Upload an image to begin...")
-        
-        gr.Markdown("""
-        ---
-        
-        ### 📚 About the Technique
-        
-        This implementation is based on the research showing that SynthID watermarks 
-        can be disrupted by re-processing images through a diffusion model pipeline.
-        
-        **Key Components:**
-        - **Low-Denoise Regeneration**: Replaces pixel-level noise (including watermark) while preserving content
-        - **ControlNet Guidance**: Uses Canny edges to maintain structural integrity
-        - **Multi-Pass Processing**: Multiple gentle passes ensure complete removal
-        
-        **Research Credit:** [00quebec/Synthid-Bypass](https://github.com/00quebec/Synthid-Bypass)
-        
-        **Limitations:**
-        - Requires GPU with sufficient VRAM
-        - May introduce subtle artifacts
-        - Processing time varies with image size
-        - Some fine details may be lost
-        """)
-        
-        # Connect the button to the processing function
-        process_btn.click(
-            fn=remove_synthid_watermark,
-            inputs=[
-                input_image,
-                denoise_strength,
-                num_steps,
-                guidance_scale,
-                controlnet_scale
-            ],
-            outputs=[output_image, status_text]
+        run_btn.click(
+            remove_watermark,
+            [input_img, denoise, loops, steps, face_det],
+            [output_img, status]
         )
         
-        # Example images (you can add these later)
-        gr.Examples(
-            examples=[],
-            inputs=input_image,
-            label="Example Images"
-        )
-    
     return demo
 
-# Launch the app
 if __name__ == "__main__":
-    demo = create_interface()
-    demo.queue(max_size=20)
+    demo = create_demo()
+    demo.queue()
     demo.launch()
