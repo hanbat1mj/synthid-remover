@@ -28,3 +28,4 @@ onnxruntime
 segment-anything
 hf_transfer
 torchsde
+av
