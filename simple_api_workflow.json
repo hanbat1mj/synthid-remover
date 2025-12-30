@@ -102,7 +102,12 @@
       ],
       "width": 3840,
       "height": 2160,
-      "enabled": true
+      "model_type": "zimage",
+      "method": "vision_yarn",
+      "yarn_alt_scaling": false,
+      "enable_dype": true,
+      "base_resolution": 1024,
+      "dype_start_sigma": 1
     }
   },
   "3": {
@@ -192,7 +197,7 @@
   "401": {
     "class_type": "ModelPatchLoader",
     "inputs": {
-      "model_name": "Z-Image-Turbo-Fun-Controlnet-Union.safetensors"
+      "name": "Z-Image-Turbo-Fun-Controlnet-Union.safetensors"
     }
   },
   "507": {
@@ -210,7 +215,12 @@
         "506",
         0
       ],
-      "seed": 9999999
+      "seed": 9999999,
+      "color_correction": "fixed",
+      "batch_size": 2160,
+      "uniform_batch_size": 0,
+      "resolution": 1,
+      "max_resolution": false
     }
   },
   "214": {
@@ -296,7 +306,8 @@
       "image": [
         "579",
         0
-      ]
+      ],
+      "strength": 1.2
     }
   },
   "581": {
@@ -324,10 +335,6 @@
       ],
       "negative": [
         "10",
-        0
-      ],
-      "bbox_detector": [
-        "578",
         0
       ],
       "guide_size": 256,
