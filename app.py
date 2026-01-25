@@ -15,6 +15,12 @@ os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 os.environ["PYTHONWARNINGS"] = "ignore"
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
+# MIG GPU compatibility - disable problematic CUDA optimizations
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+os.environ["CUDA_LAUNCH_BLOCKING"] = "0"
+# Force stable CUDA kernels for MIG compatibility
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
 # Configuration
 REPO_URL = "https://github.com/00quebec/Synthid-Bypass"
 COMFYUI_URL = "https://github.com/comfyanonymous/ComfyUI"
@@ -24,16 +30,53 @@ ROOT_DIR = os.getcwd()
 COMFYUI_DIR = os.path.join(ROOT_DIR, "ComfyUI")
 BYPASS_REPO_DIR = os.path.join(ROOT_DIR, "reference_repo")
 
+def _patch_qwen_for_mig_gpu():
+    """Patch Qwen/Llama text encoder for MIG GPU compatibility"""
+    llama_file = os.path.join(COMFYUI_DIR, "comfy/text_encoders/llama.py")
+    if not os.path.exists(llama_file):
+        return
+
+    with open(llama_file, 'r') as f:
+        content = f.read()
+
+    # Check if patch already applied
+    if 'MIG GPU compatibility' in content:
+        print("[OK] Qwen MIG GPU patch already applied")
+        return
+
+    # Patch the problematic matmul operation to use CPU fallback on error
+    original_code = '''    freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)'''
+
+    patched_code = '''    # MIG GPU compatibility: fallback to CPU on CUBLAS errors
+    try:
+        freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
+    except RuntimeError as e:
+        if 'CUBLAS' in str(e):
+            # Fallback to CPU for this operation
+            freqs = (inv_freq_expanded.float().cpu() @ position_ids_expanded.float().cpu()).transpose(1, 2).to(inv_freq_expanded.device)
+        else:
+            raise'''
+
+    if original_code in content:
+        patched_content = content.replace(original_code, patched_code)
+        with open(llama_file, 'w') as f:
+            f.write(patched_content)
+        print("[OK] Applied MIG GPU compatibility patch to Qwen text encoder")
+    else:
+        print("[WARN] Qwen patch pattern not found (file may have changed)")
+
 def setup():
     """Environment setup for Hugging Face Space"""
     # Check if a known model file exists to skip setup
     already_initialized = os.path.exists(os.path.join(COMFYUI_DIR, "models/vae/ae.safetensors"))
 
     if already_initialized:
-        print("--- ENVIRONMENT ALREADY INITIALIZED ---")
+        print("=== ENVIRONMENT ALREADY INITIALIZED ===")
+        # Still apply critical patches even if already initialized
+        _patch_qwen_for_mig_gpu()
         return
 
-    print("--- FIRST TIME SETUP STARTING ---")
+    print("=== FIRST TIME SETUP ===")
 
     # 1. Clone Repos
     subprocess.run(["git", "clone", COMFYUI_URL, COMFYUI_DIR], check=True, capture_output=True)
@@ -69,7 +112,10 @@ def setup():
             elif name == "ComfyUI-dype":
                 # changed to v2.1.0 (Nov 29, 2025) before the update introduces new parameters
                 subprocess.run(["git", "checkout", "db90fe5012f94c6aef406d743292daf76b4477a6"], cwd=node_dest, check=True, capture_output=True)
-    print("✓ Custom nodes installed")
+    print("[OK] Custom nodes installed")
+
+    # Apply MIG GPU compatibility patches
+    _patch_qwen_for_mig_gpu()
 
     # Install performance optimizations (SageAttention, Flash Attention)
     print("Installing performance optimizations...")
@@ -104,7 +150,7 @@ def setup():
             if actual_downloaded_path != out_path and os.path.exists(actual_downloaded_path):
                 os.rename(actual_downloaded_path, out_path)
 
-    print("✓ Setup complete")
+    print("[OK] Setup complete")
 
 def convert_to_api(web_workflow):
     """
@@ -214,7 +260,7 @@ def remove_watermark(input_image):
     input_image.save(input_path)
     
     # 2. Launch ComfyUI (Headless)
-    print("Launching Headless ComfyUI server...")
+    print("Starting ComfyUI server...")
     # Using the correct CWD is critical for ComfyUI to find its models and custom nodes
     cmd = [sys.executable, "main.py", "--listen", "127.0.0.1", "--port", "8188", "--disable-auto-launch"]
     proc = subprocess.Popen(cmd, cwd=COMFYUI_DIR)
@@ -226,17 +272,16 @@ def remove_watermark(input_image):
             resp = requests.get("http://127.0.0.1:8188/history", timeout=2)
             if resp.status_code == 200:
                 server_ready = True
-                print("ComfyUI server is ready!")
+                print("Server ready")
                 break
         except:
-            if i % 5 == 0: print(f"Waiting for server... ({i*2}s)")
+            if i % 5 == 0:
+                print(f"Waiting for server... ({i*2}s)")
             time.sleep(2)
-    
+
     if not server_ready:
-        print("Server logs (first 50 lines):")
-        # In a real environment, we'd capture stdout/stderr, but for now we'll just fail clearly
         proc.terminate()
-        raise RuntimeError("ComfyUI server failed to start. Port 8188 remained closed.")
+        raise RuntimeError("ComfyUI server failed to start within 90 seconds")
 
     try:
         # 3. Load pre-converted API workflow
@@ -249,15 +294,17 @@ def remove_watermark(input_image):
             api_prompt["11"]["inputs"]["image"] = input_filename
         
         # Send to ComfyUI
-        print(f"Queueing workflow to ComfyUI ({len(api_prompt)} nodes)...")
+        print(f"Processing workflow ({len(api_prompt)} nodes)...")
         prompt_data = {"prompt": api_prompt}
         resp = requests.post("http://127.0.0.1:8188/prompt", json=prompt_data)
-        
+
         if resp.status_code != 200:
-            raise RuntimeError(f"Failed to queue prompt: {resp.text}")
-            
+            error_data = resp.json() if resp.headers.get('content-type') == 'application/json' else {"error": resp.text}
+            error_msg = error_data.get('error', {}).get('message', str(error_data))
+            raise RuntimeError(f"Workflow validation failed: {error_msg}")
+
         prompt_id = resp.json().get("prompt_id")
-        print(f"Prompt queued successfully (ID: {prompt_id})")
+        print(f"Workflow queued (ID: {prompt_id[:8]}...)")
 
         # 4. Wait for completion
         # We poll the history endpoint until the prompt_id appears
@@ -270,16 +317,16 @@ def remove_watermark(input_image):
             if history_resp.status_code == 200:
                 history = history_resp.json()
                 if prompt_id in history:
-                    # Success!
-                    print("Processing complete!")
                     # Extract output filename from the SaveImage node (ID 62)
                     output_data = history[prompt_id]['outputs'].get('62')
                     if output_data and 'images' in output_data:
                         output_filename = output_data['images'][0]['filename']
                         finished = True
+                        print("Processing complete!")
                         break
-            
-            if p % 10 == 0: print(f"Still processing... ({p}s)")
+
+            if p % 10 == 0 and p > 0:
+                print(f"Still processing... ({p}s)")
             time.sleep(1)
             
         if not finished:
@@ -331,17 +378,26 @@ with gr.Blocks(title="SynthID Remover") as demo:
             outputs=[output_img]
         )
 
-        with gr.Accordion("How it works & Acknowledgments", open=False):
+        with gr.Accordion("How it works", open=False):
             gr.Markdown("""
-            ### Acknowledgments
-            This project is a direct implementation of the research by [00quebec/Synthid-Bypass](https://github.com/00quebec/Synthid-Bypass). All credit for the discovery and the original ComfyUI workflows goes to the original authors.
-            
             ### Technical Breakdown
-            The removal process works by re-processing the image through a specialized diffusion pipeline:
-            1. **Pixel Laundering**: The image is re-rendered using the **Z-Image-Turbo (S3-DiT)** model with a low denoising factor (0.2). This replaces the watermark's subtle noise patterns with new noise from the model.
-            2. **Structural Guidance**: To prevent the image from changing, a **Canny ControlNet** locks in the original geometry and composition.
-            3. **Multi-Pass Denoising**: The process runs in three iterative stages to gently scrub away the watermark without introducing artifacts.
-            4. **Face Restoration**: Using **FaceDetailer (YOLOv8)**, any detected faces are isolated and refined separately to preserve facial identity and high-end detail.
+            This tool removes SynthID watermarks by re-processing images through a specialized diffusion pipeline:
+
+            1. **Image Scaling**: Input is scaled to 2.5 megapixels for optimal processing
+            2. **Edge Detection**: Canny edge detection extracts the structural outline
+            3. **ControlNet Guidance**: Z-Image-Turbo ControlNet uses edges to maintain composition
+            4. **Multi-Pass Denoising**: Three sequential KSampler passes with 0.2 denoise strength:
+               - Each pass subtly replaces pixel noise while preserving structure
+               - Low denoise (0.2) ensures minimal visual changes
+               - 9 sampling steps per pass for efficiency
+            5. **Face Refinement**: FaceDetailer with YOLOv8 detection enhances facial details
+            6. **Output**: Final image maintains visual fidelity while removing watermark artifacts
+
+            **Models Used:**
+            - Z-Image-Turbo (12.3GB) - Main diffusion model
+            - Qwen 3 4B (8GB) - Text encoder
+            - ControlNet Union (3.1GB) - Structural guidance
+            - YOLOv8-Face - Face detection for refinement
             """)
 
 if __name__ == "__main__":
