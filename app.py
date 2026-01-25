@@ -65,7 +65,9 @@ def setup():
                 subprocess.run(["git", "checkout", IMPACT_PACK_COMMIT], cwd=node_dest, check=True, capture_output=True)
             elif name == "ComfyUI-Impact-Subpack":
                 subprocess.run(["git", "checkout", IMPACT_SUBPACK_VERSION], cwd=node_dest, check=True, capture_output=True)
-
+            elif name == "ComfyUI-dype":
+                # changed to v2.1.0 (Nov 29, 2025) before the update introduces new parameters
+                subprocess.run(["git", "checkout", "db90fe5012f94c6aef406d743292daf76b4477a6"], cwd=node_dest, check=True, capture_output=True)
     print("✓ Custom nodes installed")
 
     # Install performance optimizations (SageAttention, Flash Attention)
