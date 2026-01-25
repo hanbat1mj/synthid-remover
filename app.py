@@ -24,11 +24,46 @@ ROOT_DIR = os.getcwd()
 COMFYUI_DIR = os.path.join(ROOT_DIR, "ComfyUI")
 BYPASS_REPO_DIR = os.path.join(ROOT_DIR, "reference_repo")
 
+def _apply_seedvr2_patch():
+    """Apply MIG GPU compatibility patch to SeedVR2 custom node"""
+    compat_file = os.path.join(COMFYUI_DIR, "custom_nodes/ComfyUI-SeedVR2_VideoUpscaler/src/optimization/compatibility.py")
+    if not os.path.exists(compat_file):
+        return
+
+    with open(compat_file, 'r') as f:
+        content = f.read()
+
+    # Check if patch already applied
+    if 'Handle CUDA errors on MIG GPUs' in content or 'Failed to probe bfloat16 support' in content:
+        print("✓ SeedVR2 MIG GPU patch already applied")
+        return
+
+    # Wrap the module-level probe call in try-except
+    patched_content = content.replace(
+        'BFLOAT16_SUPPORTED = _probe_bfloat16_support()',
+        '''try:
+    BFLOAT16_SUPPORTED = _probe_bfloat16_support()
+except Exception as e:
+    print(f"[SeedVR2] Failed to probe bfloat16 support: {e}")
+    BFLOAT16_SUPPORTED = False'''
+    )
+
+    if patched_content != content:
+        with open(compat_file, 'w') as f:
+            f.write(patched_content)
+        print("✓ Applied MIG GPU compatibility patch to SeedVR2")
+    else:
+        print("⚠ SeedVR2 patch pattern not found (may already be fixed)")
+
 def setup():
     """Environment setup for Hugging Face Space"""
     # Check if a known model file exists to skip setup
-    if os.path.exists(os.path.join(COMFYUI_DIR, "models/vae/ae.safetensors")):
+    already_initialized = os.path.exists(os.path.join(COMFYUI_DIR, "models/vae/ae.safetensors"))
+
+    if already_initialized:
         print("--- ENVIRONMENT ALREADY INITIALIZED ---")
+        # Still apply critical patches even if already initialized
+        _apply_seedvr2_patch()
         return
 
     print("--- FIRST TIME SETUP STARTING ---")
@@ -69,6 +104,9 @@ def setup():
                 # changed to v2.1.0 (Nov 29, 2025) before the update introduces new parameters
                 subprocess.run(["git", "checkout", "db90fe5012f94c6aef406d743292daf76b4477a6"], cwd=node_dest, check=True, capture_output=True)
     print("✓ Custom nodes installed")
+
+    # Apply SeedVR2 MIG GPU compatibility patch
+    _apply_seedvr2_patch()
 
     # Install performance optimizations (SageAttention, Flash Attention)
     print("Installing performance optimizations...")
