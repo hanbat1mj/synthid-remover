@@ -102,7 +102,7 @@
       ],
       "width": 3840,
       "height": 2160,
-      "model_type": "zimage",
+      "model_type": "auto",
       "method": "vision_yarn",
       "yarn_alt_scaling": false,
       "enable_dype": true,
@@ -216,10 +216,10 @@
         0
       ],
       "seed": 9999999,
-      "color_correction": "fixed",
+      "color_correction": "lab",
       "batch_size": 2160,
       "uniform_batch_size": 0,
-      "resolution": 1080,
+      "resolution": 1,
       "max_resolution": false
     }
   },
