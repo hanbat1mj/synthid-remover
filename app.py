@@ -37,79 +37,44 @@ def _patch_qwen_for_mig_gpu():
         return
 
     with open(ops_file, 'r') as f:
-        content = f.read()
+        lines = f.readlines()
 
     # Check if patch already applied
+    content = ''.join(lines)
     if 'MIG GPU CUBLAS fix' in content:
         print("[OK] Qwen MIG GPU patch already applied")
         return
 
-    # Patch the linear operation to use float32 on MIG GPUs
-    original_code = '''    def forward_comfy_cast_weights(self, input, weight, bias=None, weight_dtype=None, bias_dtype=None):
-        if weight_dtype is not None:
-            weight = comfy.model_management.cast_to_device(weight, input.device, weight_dtype)
-        else:
-            weight = comfy.model_management.cast_to_device(weight, input.device, torch.float32)
+    # Find and patch the return statement in forward_comfy_cast_weights
+    patched = False
+    for i, line in enumerate(lines):
+        if 'return torch.nn.functional.linear(input, weight, bias)' in line and not patched:
+            indent = len(line) - len(line.lstrip())
+            space = ' ' * indent
+            # Replace the single return line with try-except block
+            new_lines = [
+                f'{space}# MIG GPU CUBLAS fix\n',
+                f'{space}try:\n',
+                f'{space}    return torch.nn.functional.linear(input, weight, bias)\n',
+                f'{space}except RuntimeError as e:\n',
+                f'{space}    if "CUBLAS" in str(e):\n',
+                f'{space}        input_f32 = input.float()\n',
+                f'{space}        weight_f32 = weight.float()\n',
+                f'{space}        bias_f32 = bias.float() if bias is not None else None\n',
+                f'{space}        result = torch.nn.functional.linear(input_f32, weight_f32, bias_f32)\n',
+                f'{space}        return result.to(input.dtype)\n',
+                f'{space}    raise\n'
+            ]
+            lines[i:i+1] = new_lines
+            patched = True
+            break
 
-        if bias is not None:
-            if bias_dtype is not None:
-                bias = comfy.model_management.cast_to_device(bias, input.device, bias_dtype)
-            else:
-                bias = comfy.model_management.cast_to_device(bias, input.device, torch.float32)
-        return torch.nn.functional.linear(input, weight, bias)'''
-
-    patched_code = '''    def forward_comfy_cast_weights(self, input, weight, bias=None, weight_dtype=None, bias_dtype=None):
-        if weight_dtype is not None:
-            weight = comfy.model_management.cast_to_device(weight, input.device, weight_dtype)
-        else:
-            weight = comfy.model_management.cast_to_device(weight, input.device, torch.float32)
-
-        if bias is not None:
-            if bias_dtype is not None:
-                bias = comfy.model_management.cast_to_device(bias, input.device, bias_dtype)
-            else:
-                bias = comfy.model_management.cast_to_device(bias, input.device, torch.float32)
-
-        # MIG GPU CUBLAS fix: Force float32 for linear ops to avoid CUBLAS errors
-        try:
-            return torch.nn.functional.linear(input, weight, bias)
-        except RuntimeError as e:
-            if 'CUBLAS' in str(e):
-                # Force everything to float32 and retry
-                input_f32 = input.float()
-                weight_f32 = weight.float()
-                bias_f32 = bias.float() if bias is not None else None
-                result = torch.nn.functional.linear(input_f32, weight_f32, bias_f32)
-                return result.to(input.dtype)
-            raise'''
-
-    if original_code in content:
-        patched_content = content.replace(original_code, patched_code)
+    if patched:
         with open(ops_file, 'w') as f:
-            f.write(patched_content)
+            f.writelines(lines)
         print("[OK] Applied MIG GPU CUBLAS fix to linear operations")
     else:
-        # Try a simpler pattern match
-        if 'return torch.nn.functional.linear(input, weight, bias)' in content:
-            patched_content = content.replace(
-                '        return torch.nn.functional.linear(input, weight, bias)',
-                '''        # MIG GPU CUBLAS fix
-        try:
-            return torch.nn.functional.linear(input, weight, bias)
-        except RuntimeError as e:
-            if 'CUBLAS' in str(e):
-                input_f32 = input.float()
-                weight_f32 = weight.float()
-                bias_f32 = bias.float() if bias is not None else None
-                result = torch.nn.functional.linear(input_f32, weight_f32, bias_f32)
-                return result.to(input.dtype)
-            raise'''
-            )
-            with open(ops_file, 'w') as f:
-                f.write(patched_content)
-            print("[OK] Applied MIG GPU CUBLAS fix (fallback pattern)")
-        else:
-            print("[WARN] Could not find patch location in ops.py")
+        print("[WARN] Could not find patch location in ops.py")
 
 def setup():
     """Environment setup for Hugging Face Space"""
