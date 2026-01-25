@@ -1,20 +1,4 @@
 {
-  "506": {
-    "class_type": "SeedVR2LoadVAEModel",
-    "inputs": {
-      "model": "ema_vae_fp16.safetensors",
-      "device": "cuda:0",
-      "dtype": "auto"
-    }
-  },
-  "505": {
-    "class_type": "SeedVR2LoadDiTModel",
-    "inputs": {
-      "model": "seedvr2_ema_7b_sharp_fp16.safetensors",
-      "device": "cuda:0",
-      "dtype": "auto"
-    }
-  },
   "10": {
     "class_type": "CLIPTextEncode",
     "inputs": {
@@ -29,7 +13,7 @@
     "class_type": "VAEEncode",
     "inputs": {
       "pixels": [
-        "574",
+        "573",
         0
       ],
       "vae": [
@@ -82,15 +66,6 @@
         0
       ],
       "shift": 3
-    }
-  },
-  "513": {
-    "class_type": "Get Image Size",
-    "inputs": {
-      "image": [
-        "574",
-        0
-      ]
     }
   },
   "512": {
@@ -200,29 +175,6 @@
       "name": "Z-Image-Turbo-Fun-Controlnet-Union.safetensors"
     }
   },
-  "507": {
-    "class_type": "SeedVR2VideoUpscaler",
-    "inputs": {
-      "image": [
-        "573",
-        0
-      ],
-      "dit": [
-        "505",
-        0
-      ],
-      "vae": [
-        "506",
-        0
-      ],
-      "seed": 9999999,
-      "color_correction": "lab",
-      "batch_size": 2160,
-      "uniform_batch_size": 0,
-      "resolution": 1,
-      "max_resolution": false
-    }
-  },
   "214": {
     "class_type": "CLIPLoader",
     "inputs": {
@@ -242,38 +194,10 @@
       "resolution_steps": 1
     }
   },
-  "574": {
-    "class_type": "ImpactSwitch",
-    "inputs": {
-      "input1": [
-        "507",
-        0
-      ],
-      "input2": [
-        "573",
-        0
-      ],
-      "select": 1,
-      "sel_mode": false
-    }
-  },
-  "577": {
-    "class_type": "Image Comparer (rgthree)",
-    "inputs": {
-      "image_a": [
-        "581",
-        0
-      ],
-      "image_b": [
-        "11",
-        0
-      ]
-    }
-  },
   "11": {
     "class_type": "LoadImage",
     "inputs": {
-      "image": "03.png",
+      "image": "input.png",
       "upload": "image"
     }
   },
@@ -281,7 +205,7 @@
     "class_type": "Canny",
     "inputs": {
       "image": [
-        "574",
+        "573",
         0
       ],
       "low_threshold": 0.02,
