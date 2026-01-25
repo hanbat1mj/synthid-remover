@@ -32,38 +32,84 @@ BYPASS_REPO_DIR = os.path.join(ROOT_DIR, "reference_repo")
 
 def _patch_qwen_for_mig_gpu():
     """Patch Qwen/Llama text encoder for MIG GPU compatibility"""
-    llama_file = os.path.join(COMFYUI_DIR, "comfy/text_encoders/llama.py")
-    if not os.path.exists(llama_file):
+    ops_file = os.path.join(COMFYUI_DIR, "comfy/ops.py")
+    if not os.path.exists(ops_file):
         return
 
-    with open(llama_file, 'r') as f:
+    with open(ops_file, 'r') as f:
         content = f.read()
 
     # Check if patch already applied
-    if 'MIG GPU compatibility' in content:
+    if 'MIG GPU CUBLAS fix' in content:
         print("[OK] Qwen MIG GPU patch already applied")
         return
 
-    # Patch the problematic matmul operation to use CPU fallback on error
-    original_code = '''    freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)'''
-
-    patched_code = '''    # MIG GPU compatibility: fallback to CPU on CUBLAS errors
-    try:
-        freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
-    except RuntimeError as e:
-        if 'CUBLAS' in str(e):
-            # Fallback to CPU for this operation
-            freqs = (inv_freq_expanded.float().cpu() @ position_ids_expanded.float().cpu()).transpose(1, 2).to(inv_freq_expanded.device)
+    # Patch the linear operation to use float32 on MIG GPUs
+    original_code = '''    def forward_comfy_cast_weights(self, input, weight, bias=None, weight_dtype=None, bias_dtype=None):
+        if weight_dtype is not None:
+            weight = comfy.model_management.cast_to_device(weight, input.device, weight_dtype)
         else:
+            weight = comfy.model_management.cast_to_device(weight, input.device, torch.float32)
+
+        if bias is not None:
+            if bias_dtype is not None:
+                bias = comfy.model_management.cast_to_device(bias, input.device, bias_dtype)
+            else:
+                bias = comfy.model_management.cast_to_device(bias, input.device, torch.float32)
+        return torch.nn.functional.linear(input, weight, bias)'''
+
+    patched_code = '''    def forward_comfy_cast_weights(self, input, weight, bias=None, weight_dtype=None, bias_dtype=None):
+        if weight_dtype is not None:
+            weight = comfy.model_management.cast_to_device(weight, input.device, weight_dtype)
+        else:
+            weight = comfy.model_management.cast_to_device(weight, input.device, torch.float32)
+
+        if bias is not None:
+            if bias_dtype is not None:
+                bias = comfy.model_management.cast_to_device(bias, input.device, bias_dtype)
+            else:
+                bias = comfy.model_management.cast_to_device(bias, input.device, torch.float32)
+
+        # MIG GPU CUBLAS fix: Force float32 for linear ops to avoid CUBLAS errors
+        try:
+            return torch.nn.functional.linear(input, weight, bias)
+        except RuntimeError as e:
+            if 'CUBLAS' in str(e):
+                # Force everything to float32 and retry
+                input_f32 = input.float()
+                weight_f32 = weight.float()
+                bias_f32 = bias.float() if bias is not None else None
+                result = torch.nn.functional.linear(input_f32, weight_f32, bias_f32)
+                return result.to(input.dtype)
             raise'''
 
     if original_code in content:
         patched_content = content.replace(original_code, patched_code)
-        with open(llama_file, 'w') as f:
+        with open(ops_file, 'w') as f:
             f.write(patched_content)
-        print("[OK] Applied MIG GPU compatibility patch to Qwen text encoder")
+        print("[OK] Applied MIG GPU CUBLAS fix to linear operations")
     else:
-        print("[WARN] Qwen patch pattern not found (file may have changed)")
+        # Try a simpler pattern match
+        if 'return torch.nn.functional.linear(input, weight, bias)' in content:
+            patched_content = content.replace(
+                '        return torch.nn.functional.linear(input, weight, bias)',
+                '''        # MIG GPU CUBLAS fix
+        try:
+            return torch.nn.functional.linear(input, weight, bias)
+        except RuntimeError as e:
+            if 'CUBLAS' in str(e):
+                input_f32 = input.float()
+                weight_f32 = weight.float()
+                bias_f32 = bias.float() if bias is not None else None
+                result = torch.nn.functional.linear(input_f32, weight_f32, bias_f32)
+                return result.to(input.dtype)
+            raise'''
+            )
+            with open(ops_file, 'w') as f:
+                f.write(patched_content)
+            print("[OK] Applied MIG GPU CUBLAS fix (fallback pattern)")
+        else:
+            print("[WARN] Could not find patch location in ops.py")
 
 def setup():
     """Environment setup for Hugging Face Space"""
