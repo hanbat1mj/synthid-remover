@@ -31,48 +31,71 @@ COMFYUI_DIR = os.path.join(ROOT_DIR, "ComfyUI")
 BYPASS_REPO_DIR = os.path.join(ROOT_DIR, "reference_repo")
 
 def _patch_qwen_for_mig_gpu():
-    """Force Qwen text encoder to CPU - MIG GPU incompatible"""
+    """Patch Qwen text encoder for MIG GPU - force CPU fallback on CUBLAS errors"""
+
+    # Patch 1: llama.py - frequency computation
     llama_file = os.path.join(COMFYUI_DIR, "comfy/text_encoders/llama.py")
-    if not os.path.exists(llama_file):
-        return
+    if os.path.exists(llama_file):
+        with open(llama_file, 'r') as f:
+            lines = f.readlines()
+        content = ''.join(lines)
 
-    with open(llama_file, 'r') as f:
-        lines = f.readlines()
+        if 'MIG GPU: force CPU' not in content:
+            patched = False
+            for i, line in enumerate(lines):
+                if 'freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)' in line and not patched:
+                    indent = len(line) - len(line.lstrip())
+                    space = ' ' * indent
+                    new_lines = [
+                        f'{space}# MIG GPU: force CPU for matmul\n',
+                        f'{space}try:\n',
+                        f'{space}    freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)\n',
+                        f'{space}except RuntimeError as e:\n',
+                        f'{space}    if "CUBLAS" in str(e):\n',
+                        f'{space}        device = inv_freq_expanded.device\n',
+                        f'{space}        freqs = (inv_freq_expanded.float().cpu() @ position_ids_expanded.float().cpu()).transpose(1, 2).to(device)\n',
+                        f'{space}    else:\n',
+                        f'{space}        raise\n'
+                    ]
+                    lines[i:i+1] = new_lines
+                    patched = True
+                    break
+            if patched:
+                with open(llama_file, 'w') as f:
+                    f.writelines(lines)
+                print("[OK] Patched llama.py freqs computation")
 
-    # Check if patch already applied
-    content = ''.join(lines)
-    if 'MIG GPU: force CPU' in content:
-        print("[OK] Qwen CPU fallback already applied")
-        return
+    # Patch 2: ops.py - all linear operations
+    ops_file = os.path.join(COMFYUI_DIR, "comfy/ops.py")
+    if os.path.exists(ops_file):
+        with open(ops_file, 'r') as f:
+            lines = f.readlines()
+        content = ''.join(lines)
 
-    # Patch the problematic matmul at line ~301
-    patched = False
-    for i, line in enumerate(lines):
-        if 'freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)' in line and not patched:
-            indent = len(line) - len(line.lstrip())
-            space = ' ' * indent
-            # Force this operation to CPU to avoid CUBLAS errors on MIG GPUs
-            new_lines = [
-                f'{space}# MIG GPU: force CPU for matmul to avoid CUBLAS errors\n',
-                f'{space}try:\n',
-                f'{space}    freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)\n',
-                f'{space}except RuntimeError as e:\n',
-                f'{space}    if "CUBLAS" in str(e):\n',
-                f'{space}        device = inv_freq_expanded.device\n',
-                f'{space}        freqs = (inv_freq_expanded.float().cpu() @ position_ids_expanded.float().cpu()).transpose(1, 2).to(device)\n',
-                f'{space}    else:\n',
-                f'{space}        raise\n'
-            ]
-            lines[i:i+1] = new_lines
-            patched = True
-            break
-
-    if patched:
-        with open(llama_file, 'w') as f:
-            f.writelines(lines)
-        print("[OK] Applied Qwen CPU fallback for MIG GPU")
-    else:
-        print("[WARN] Could not find freqs computation in llama.py")
+        if 'MIG GPU CUBLAS' not in content:
+            patched = False
+            for i, line in enumerate(lines):
+                if 'x = torch.nn.functional.linear(input, weight, bias)' in line and 'forward_comfy_cast_weights' in ''.join(lines[max(0,i-10):i]) and not patched:
+                    indent = len(line) - len(line.lstrip())
+                    space = ' ' * indent
+                    new_lines = [
+                        f'{space}# MIG GPU CUBLAS fix\n',
+                        f'{space}try:\n',
+                        f'{space}    x = torch.nn.functional.linear(input, weight, bias)\n',
+                        f'{space}except RuntimeError as e:\n',
+                        f'{space}    if "CUBLAS" in str(e):\n',
+                        f'{space}        x = torch.nn.functional.linear(input.float(), weight.float(), bias.float() if bias is not None else None)\n',
+                        f'{space}        x = x.to(input.dtype)\n',
+                        f'{space}    else:\n',
+                        f'{space}        raise\n'
+                    ]
+                    lines[i:i+1] = new_lines
+                    patched = True
+                    break
+            if patched:
+                with open(ops_file, 'w') as f:
+                    f.writelines(lines)
+                print("[OK] Patched ops.py linear operations")
 
 def setup():
     """Environment setup for Hugging Face Space"""
