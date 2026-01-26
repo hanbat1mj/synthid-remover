@@ -84,8 +84,9 @@ def _patch_qwen_for_mig_gpu():
                         f'{space}    x = torch.nn.functional.linear(input, weight, bias)\n',
                         f'{space}except RuntimeError as e:\n',
                         f'{space}    if "CUBLAS" in str(e):\n',
-                        f'{space}        x = torch.nn.functional.linear(input.float(), weight.float(), bias.float() if bias is not None else None)\n',
-                        f'{space}        x = x.to(input.dtype)\n',
+                        f'{space}        device = input.device\n',
+                        f'{space}        x = torch.nn.functional.linear(input.cpu().float(), weight.cpu().float(), bias.cpu().float() if bias is not None else None)\n',
+                        f'{space}        x = x.to(device).to(input.dtype)\n',
                         f'{space}    else:\n',
                         f'{space}        raise\n'
                     ]
