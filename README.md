@@ -5,7 +5,6 @@ colorFrom: indigo
 colorTo: blue
 sdk: gradio
 sdk_version: 6.31.0
-python_version: "3.11"
 app_file: app.py
 pinned: false
 license: mit
@@ -51,8 +50,8 @@ V2 combines two model paths in a single graph:
 2. **Global redraw pass** — a single low-denoise `KSampler` redraws the image
    through the **Qwen-Image** path, while a Canny edge map drives
    `QwenImageDiffsynthControlnet` to lock the composition in place.
-3. **Strict face segmentation** — faces are detected with Ultralytics, refined
-   with MediaPipe face mesh and a SAM-assisted path, and converted to SEGS.
+3. **Strict face segmentation** — faces are detected with Ultralytics and
+   refined with SAM, then converted to SEGS regions.
 4. **Adaptive face reconstruction** — the bundled
    `Synthid-Bypass-Facedetailer` (`SEGSDetailerModelSwap`) swaps to the
    **Z-Image Turbo** path for a face-only cleanup pass with adaptive denoise
@@ -124,9 +123,18 @@ keeps two full model stacks resident at once.
   [arXiv:2405.07145](https://arxiv.org/abs/2405.07145)
 - **SynthID**: [Google DeepMind](https://deepmind.google/models/synthid/)
 
-Built on [ComfyUI](https://github.com/comfyanonymous/ComfyUI) and the
-ComfyUI-GGUF, Impact Pack, Impact Subpack, KJNodes, controlnet_aux,
-Inpaint-CropAndStitch, rgthree and RES4LYF node packs.
+Built on [ComfyUI](https://github.com/comfyanonymous/ComfyUI) (pinned to
+v0.7.0) and the ComfyUI-GGUF, Impact Pack, Impact Subpack, KJNodes and RES4LYF
+node packs, plus the reference repo's own bundled `Comfyui-SynthidBypass` nodes.
+
+Note on fidelity: of the 46 nodes in `Synthid-Bypass-v2.0.json`, 30 actually
+feed the output. The MediaPipe face-mesh branch, both `InpaintCropImproved`
+nodes and the `MaskToSEGS` chains are disconnected in the shipped graph, so
+they are not reproduced here — which means `comfyui_controlnet_aux` and
+`ComfyUI-Inpaint-CropAndStitch` are not needed despite being listed upstream.
+The rgthree Power Lora Loader (one enabled LoRA, null `strengthTwo`) is exactly
+core `LoraLoader` with `strength_clip == strength_model`, and masquerade's
+`Get Image Size` is an image-shape read, so both are inlined.
 
 ## 🤝 Contributing
 

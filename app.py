@@ -29,6 +29,7 @@ import asyncio
 import os
 import random
 import sys
+import threading
 import traceback
 
 import gradio as gr
@@ -90,12 +91,19 @@ def _bootstrap_nodes():
     asyncio.set_event_loop(loop)
 
     # Impact Pack registers aiohttp routes against PromptServer.instance at
-    # import time, so a real PromptServer must exist before node init. Its
-    # constructor takes an asset manager; assets default to disabled, so
-    # default_asset_manager() returns a no-op implementation (no DB, no scan).
-    from app.assets.manager import default_asset_manager
+    # import time, so a real PromptServer must exist before node init. A stub
+    # will not do. Constructing it opens no socket -- PromptServer.start() does
+    # that, and is never called here.
+    #
+    # The constructor gained a required `asset_manager` argument after v0.7.0,
+    # so try the newer signature first and fall back. Assets default to
+    # disabled, which makes default_asset_manager() a no-op (no DB, no scan).
+    try:
+        from app.assets.manager import default_asset_manager
 
-    server.PromptServer(loop, default_asset_manager())
+        server.PromptServer(loop, default_asset_manager())
+    except ImportError:
+        server.PromptServer(loop)
 
     # init_extra_nodes is a coroutine on modern ComfyUI. Calling it without
     # awaiting silently registers nothing and every custom node lookup then
@@ -192,17 +200,18 @@ ZIMAGE_VAE_FILE = "ae.safetensors"                              # 582
 FACE_DETECTOR_FILE = "bbox/yolov8n-face.pt"                     # 516
 SAM_FILE = "sam_vit_b_01ec64.pth"                               # 612
 
-# Z-Image Turbo is a Lumina2/NextDiT-family model, so `lumina2` is correct here.
+# Both CLIP loaders use type "lumina2", exactly as the reference workflow does.
+#
+# That looks wrong on node 608, which loads a Qwen2.5-VL encoder for the
+# Qwen-Image path where "qwen_image" would be the obvious choice. It is in fact
+# a no-op: comfy/sd.py picks the text-encoder implementation by *state-dict
+# detection*, not by this argument. Qwen2.5-VL-7B is detected as
+# TEModel.QWEN25_7B and routed to comfy.text_encoders.qwen_image.te unless the
+# type is specifically HUNYUAN_IMAGE; Qwen3-4B is detected as TEModel.QWEN3_4B
+# and routed to comfy.text_encoders.z_image.te. So both files load through the
+# correct encoder either way, and the reference value is kept verbatim.
 ZIMAGE_CLIP_TYPE = "lumina2"
-
-# NOTE -- deliberate deviation from the reference workflow.
-# Node 608 in Synthid-Bypass-v2.0.json loads the Qwen2.5-VL text encoder with
-# type "lumina2", which appears to be a copy-paste leftover from the Z-Image
-# loader above it: Qwen-Image's text encoder type in ComfyUI is "qwen_image",
-# and loading Qwen2.5-VL weights through the Lumina2 path does not produce
-# valid conditioning. Set this back to "lumina2" to reproduce the reference
-# byte-for-byte.
-QWEN_CLIP_TYPE = "qwen_image"
+QWEN_CLIP_TYPE = "lumina2"
 
 LORA_STRENGTH = 0.8          # 564: strength 0.8, strengthTwo null -> clip 0.8
 AURA_SHIFT = 3               # 6
@@ -226,49 +235,98 @@ DENOISE_MIN = 0.08
 DENOISE_MAX = 0.15
 DEFAULT_ADAPTIVE_LEVEL = 6
 
-GPU_DURATION = 180
+# A cold worker pays the model mmap + host->VRAM transfer on its first call, so
+# this has to cover that plus a full run. ZeroGPU rejects a declared duration
+# above the caller's quota ("ZeroGPU illegal duration"), and anonymous visitors
+# have the smallest quota of all -- so this is deliberately conservative rather
+# than generous. Raise it if cold-start runs get aborted.
+GPU_DURATION = 120
 
 
 # --------------------------------------------------------------------------
-# 5. Module-scope model loading.
-#    ZeroGPU forks a fresh worker per request, so anything loaded inside the
-#    decorated function would be reloaded every call. Loaders belong here; the
-#    fork inherits them copy-on-write and ZeroGPU replays CUDA state into it.
+# 5. Lazy model loading -- MUST happen inside the @spaces.GPU worker.
 # --------------------------------------------------------------------------
-print("[models] loading Qwen-Image path", flush=True)
-QWEN_UNET = node("UnetLoaderGGUF", unet_name=QWEN_UNET_FILE)
-QWEN_CLIP = node("CLIPLoaderGGUF", clip_name=QWEN_CLIP_FILE, type=QWEN_CLIP_TYPE)
-QWEN_VAE = node("VAELoader", vae_name=QWEN_VAE_FILE)
-QWEN_CONTROLNET = node("ModelPatchLoader", name=QWEN_CONTROLNET_FILE)
+# This is the one structural constraint ZeroGPU imposes on a GGUF workflow, and
+# getting it wrong is fatal rather than slow.
+#
+# At module scope `spaces` has torch patched, which includes a TorchDispatchMode
+# that routes `aten::alias` through Python. `GGMLTensor(t, ...)` goes
+# Tensor.__new__ -> base_tensor_ctor -> t.alias(), and that Python round-trip
+# binds a plain `torch.Tensor` pyobj to the fresh TensorImpl. The C++ guard in
+# THPVariable_NewWithVar then refuses to rebind it as a subclass:
+#
+#   RuntimeError: Creating a new Tensor subclass GGMLTensor but the raw Tensor
+#   object is already associated to a python object of type Tensor which is not
+#   a subclass of the requested type
+#
+# Inside a @spaces.GPU function `spaces` has called torch.unpatch() and real
+# CUDA is attached, so the construction succeeds normally. Defining the
+# GGMLTensor class at import is fine; instantiating one is not.
+#
+# (A `GGMLTensor.__new__` shim routing through `Tensor._make_subclass` does fix
+# the constructor -- that call disables dispatch modes in C++ -- but it only
+# moves the failure: GGMLTensor.shape is the logical shape while its storage is
+# packed uint8, so ZeroGPU's startup packing then dies in pack_to_cuda's
+# `set_(storage, 0, tensor.shape, tensor.stride())`. Loading in the worker is
+# the approach that actually works.)
+#
+# Worker reuse is what makes this cheap: `spaces.zero.wrappers` keeps a
+# `workers` dict in the main process and hands an idle worker back for
+# subsequent calls, and the worker body is a long-lived loop that initializes
+# once. So this cache survives across requests until the scheduler reclaims the
+# GPU slot. A cold worker re-pays only an mmap over warm page cache --
+# ComfyUI-GGUF's loader is `torch.from_numpy(tensor.data)` over a memory-mapped
+# file, not a 29GB read.
+_MODEL_LOCK = threading.Lock()
+_MODELS: dict[str, object] = {}
 
-# 564: "Power Lora Loader (rgthree)" with a single enabled lora and a null
-# strengthTwo is exactly core LoraLoader with strength_clip == strength_model,
-# so the rgthree dependency is not needed.
-QWEN_MODEL, QWEN_CLIP_PATCHED = node(
-    "LoraLoader",
-    model=QWEN_UNET[0],
-    clip=QWEN_CLIP[0],
-    lora_name=QWEN_LORA_FILE,
-    strength_model=LORA_STRENGTH,
-    strength_clip=LORA_STRENGTH,
-)
-QWEN_SAMPLING = node("ModelSamplingAuraFlow", model=QWEN_MODEL, shift=AURA_SHIFT)
 
-print("[models] loading Z-Image Turbo path", flush=True)
-ZIMAGE_UNET = node("UnetLoaderGGUF", unet_name=ZIMAGE_UNET_FILE)
-ZIMAGE_CLIP = node("CLIPLoaderGGUF", clip_name=ZIMAGE_CLIP_FILE, type=ZIMAGE_CLIP_TYPE)
-ZIMAGE_VAE = node("VAELoader", vae_name=ZIMAGE_VAE_FILE)
+def models() -> dict[str, object]:
+    """Load every model once per worker. Only call inside @spaces.GPU."""
+    with _MODEL_LOCK:
+        if _MODELS:
+            return _MODELS
 
-print("[models] loading detectors", flush=True)
-BBOX_DETECTOR = node("UltralyticsDetectorProvider", model_name=FACE_DETECTOR_FILE)
-SAM_MODEL = node("SAMLoader", model_name=SAM_FILE, device_mode="AUTO")
+        print("[models] loading Qwen-Image path", flush=True)
+        qwen_unet = node("UnetLoaderGGUF", unet_name=QWEN_UNET_FILE)
+        qwen_clip = node("CLIPLoaderGGUF", clip_name=QWEN_CLIP_FILE, type=QWEN_CLIP_TYPE)
 
-# Deliberately NOT calling model_management.load_models_gpu() here. Outside a
-# @spaces.GPU function ZeroGPU runs a CUDA emulation layer and serializes
-# module-scope GPU tensors to disk at launch; forcing ~29GB of weights through
-# that would risk exhausting the Space's ephemeral disk. ComfyUI's samplers call
-# load_models_gpu() themselves on first use, inside the GPU worker, which is
-# where the real device actually exists.
+        # 564: "Power Lora Loader (rgthree)" with a single enabled LoRA and a
+        # null strengthTwo is exactly core LoraLoader with
+        # strength_clip == strength_model, so rgthree is not needed.
+        qwen_model, qwen_clip_patched = node(
+            "LoraLoader",
+            model=qwen_unet[0],
+            clip=qwen_clip[0],
+            lora_name=QWEN_LORA_FILE,
+            strength_model=LORA_STRENGTH,
+            strength_clip=LORA_STRENGTH,
+        )
+
+        print("[models] loading Z-Image Turbo path", flush=True)
+        zimage_unet = node("UnetLoaderGGUF", unet_name=ZIMAGE_UNET_FILE)
+        zimage_clip = node(
+            "CLIPLoaderGGUF", clip_name=ZIMAGE_CLIP_FILE, type=ZIMAGE_CLIP_TYPE
+        )
+
+        print("[models] loading VAEs, controlnet and detectors", flush=True)
+        _MODELS.update(
+            qwen_sampling=node(
+                "ModelSamplingAuraFlow", model=qwen_model, shift=AURA_SHIFT
+            )[0],
+            qwen_clip=qwen_clip_patched,
+            qwen_vae=node("VAELoader", vae_name=QWEN_VAE_FILE)[0],
+            qwen_controlnet=node("ModelPatchLoader", name=QWEN_CONTROLNET_FILE)[0],
+            zimage_unet=zimage_unet[0],
+            zimage_clip=zimage_clip[0],
+            zimage_vae=node("VAELoader", vae_name=ZIMAGE_VAE_FILE)[0],
+            bbox_detector=node(
+                "UltralyticsDetectorProvider", model_name=FACE_DETECTOR_FILE
+            )[0],
+            sam=node("SAMLoader", model_name=SAM_FILE, device_mode="AUTO")[0],
+        )
+        print("[models] ready", flush=True)
+        return _MODELS
 
 # RES4LYF contributes no nodes -- it appends `res_2s` to
 # comfy.samplers.KSampler.SAMPLERS and `bong_tangent` to Impact Pack's scheduler
@@ -295,7 +353,7 @@ def _assert_res4lyf():
 
 
 _assert_res4lyf()
-print("[models] ready", flush=True)
+print("[setup] nodes registered; models load on the first request", flush=True)
 
 
 # --------------------------------------------------------------------------
@@ -320,6 +378,7 @@ def remove_watermark(
     face_seed = random.randint(0, 0xFFFFFFFFFFFFFFFF)
 
     try:
+        m = models()
         with torch.inference_mode():
             # 11 LoadImage. The image is used at native resolution: node 609
             # (ImageScaleToTotalPixels) is bypassed in the reference workflow,
@@ -339,10 +398,10 @@ def remove_watermark(
             # 9 / 10 CLIP Text Encode for the Qwen-Image path.
             print("[run] Encoding prompts", flush=True)
             positive = node(
-                "CLIPTextEncode", clip=QWEN_CLIP_PATCHED, text=POSITIVE_PROMPT
+                "CLIPTextEncode", clip=m["qwen_clip"], text=POSITIVE_PROMPT
             )[0]
             negative = node(
-                "CLIPTextEncode", clip=QWEN_CLIP_PATCHED, text=NEGATIVE_PROMPT
+                "CLIPTextEncode", clip=m["qwen_clip"], text=NEGATIVE_PROMPT
             )[0]
 
             # 551 Canny -> 552 QwenImageDiffsynthControlnet: lock composition.
@@ -355,16 +414,16 @@ def remove_watermark(
             )[0]
             controlled_model = node(
                 "QwenImageDiffsynthControlnet",
-                model=QWEN_SAMPLING[0],
-                model_patch=QWEN_CONTROLNET[0],
-                vae=QWEN_VAE[0],
+                model=m["qwen_sampling"],
+                model_patch=m["qwen_controlnet"],
+                vae=m["qwen_vae"],
                 image=edges,
                 strength=CONTROLNET_STRENGTH,
             )[0]
 
             # 8 VAEEncode -> 3 KSampler -> 61 VAEDecode: the global redraw.
             print("[run] Redrawing image", flush=True)
-            latent = node("VAEEncode", pixels=image, vae=QWEN_VAE[0])[0]
+            latent = node("VAEEncode", pixels=image, vae=m["qwen_vae"])[0]
             sampled = node(
                 "KSampler",
                 model=controlled_model,
@@ -378,7 +437,7 @@ def remove_watermark(
                 scheduler=SAMPLER_SCHEDULER,
                 denoise=denoise,
             )[0]
-            decoded = node("VAEDecode", samples=sampled, vae=QWEN_VAE[0])[0]
+            decoded = node("VAEDecode", samples=sampled, vae=m["qwen_vae"])[0]
 
             # 520 Get Image Size -> 568 ImageResizeKJv2: restore the redraw to
             # the input's exact dimensions (the VAE round-trip pads to a
@@ -419,7 +478,7 @@ def remove_watermark(
             print("[run] Detecting faces", flush=True)
             segs = node(
                 "ImpactSimpleDetectorSEGS",
-                bbox_detector=BBOX_DETECTOR[0],
+                bbox_detector=m["bbox_detector"],
                 image=reference,
                 bbox_threshold=0.2,
                 bbox_dilation=0,
@@ -430,15 +489,15 @@ def remove_watermark(
                 sub_bbox_expansion=0,
                 sam_mask_hint_threshold=0.7,
                 post_dilation=0,
-                sam_model_opt=SAM_MODEL[0],
+                sam_model_opt=m["sam"],
             )[0]
 
             # 583 / 581 CLIP Text Encode for the Z-Image face pass.
             face_positive = node(
-                "CLIPTextEncode", clip=ZIMAGE_CLIP[0], text=FACE_POSITIVE_PROMPT
+                "CLIPTextEncode", clip=m["zimage_clip"], text=FACE_POSITIVE_PROMPT
             )[0]
             face_negative = node(
-                "CLIPTextEncode", clip=ZIMAGE_CLIP[0], text=FACE_NEGATIVE_PROMPT
+                "CLIPTextEncode", clip=m["zimage_clip"], text=FACE_NEGATIVE_PROMPT
             )[0]
 
             # 592 Synthid-Bypass-Facedetailer: swap to the Z-Image Turbo path
@@ -448,9 +507,9 @@ def remove_watermark(
                 "SEGSDetailerModelSwap",
                 image=reference,
                 segs=segs,
-                model=ZIMAGE_UNET[0],
-                clip=ZIMAGE_CLIP[0],
-                vae=ZIMAGE_VAE[0],
+                model=m["zimage_unet"],
+                clip=m["zimage_clip"],
+                vae=m["zimage_vae"],
                 positive=face_positive,
                 negative=face_negative,
                 guide_size=768,

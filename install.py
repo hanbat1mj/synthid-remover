@@ -36,16 +36,19 @@ MODELS_DIR = os.path.join(COMFYUI_DIR, "models")
 # --------------------------------------------------------------------------
 # Pins
 # --------------------------------------------------------------------------
-# ComfyUI: pinned to the release that was current when the reference V2
-# workflow was authored (repo pushed 2026-09-20; v0.37.0 is 2026-09-21), so the
-# node signatures match what the workflow was built against. Pinned to a tag
-# rather than master so upstream churn cannot break this Space again.
+# ComfyUI: pinned to v0.7.0 (2025-12-31), chosen for three reasons:
 #
-# Note: the `comfy-core` "ver" stamps inside the workflow JSON (0.3.77, 0.4.0,
-# 0.7.0) are node-registry versions, NOT ComfyUI release numbers -- there is no
-# ComfyUI v0.7.0. Verified that v0.37.0 registers every core node V2 needs.
+#  1. It is the last release BEFORE `comfy-kitchen` (v0.8.0), `comfy-aimdo`
+#     (v0.12.0) and `comfy-angle` (v0.28.0) entered requirements.txt. Those are
+#     compiled extensions, and a missing `comfy_aimdo` is exactly what broke the
+#     previous revision of this Space. Pinning here removes them entirely rather
+#     than depending on them loading correctly under ZeroGPU.
+#  2. It satisfies the workflow's highest `comfy-core` node stamp (0.7.0) and
+#     registers every core node V2 needs.
+#  3. It is contemporaneous with the custom node packs pinned below (all
+#     Dec 2025 / Jan 2026), so their ComfyUI import surface matches.
 COMFYUI_REPO = "https://github.com/comfyanonymous/ComfyUI"
-COMFYUI_REF = "v0.37.0"
+COMFYUI_REF = "v0.7.0"
 
 # The reference workflow for this port.
 REFERENCE_REPO = "https://github.com/cebeuq/Synthid-Bypass"
