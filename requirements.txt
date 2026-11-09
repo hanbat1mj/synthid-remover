@@ -1,45 +1,87 @@
-gradio>=4.0.0
+# ---------------------------------------------------------------------------
+# All pip dependencies for this Space live here and are installed at BUILD time.
+#
+# Nothing is pip-installed at runtime. The previous revision cloned ComfyUI at
+# unpinned `master` and hand-maintained a guessed subset of its dependencies;
+# when upstream added `comfy-aimdo` as a hard import, every single run died with
+# ModuleNotFoundError. This file is now the union of:
+#   - ComfyUI v0.37.0's own requirements.txt (verbatim pins)
+#   - each pinned custom node pack's requirements
+#   - the Space's own Gradio/ZeroGPU needs
+# ---------------------------------------------------------------------------
+
+# --- Space runtime ---
+gradio==6.31.0
+spaces>=0.51.3
+huggingface_hub>=1.0.0
+
+# --- ComfyUI v0.37.0 (exact pins from its requirements.txt) ---
+comfyui-frontend-package==1.52.7
+comfyui-workflow-templates==0.11.66
+comfyui-embedded-docs==0.5.12
+comfy-kitchen==0.2.35
+comfy-aimdo==0.5.5
+# `comfy_aimdo` is a HARD module-scope import in comfy/model_management.py.
+# Omitting it is what broke the previous revision.
+
 torch
+torchsde
 torchvision
 torchaudio
-diffusers
-transformers
-accelerate
-opencv-python
-pillow
-numpy
-spaces>=0.28.0
-controlnet-aux
-safetensors
-ultralytics
-huggingface-hub
-websockets
-aiohttp
-psutil
-requests
-tqdm
+numpy>=1.26.4
 einops
-kornia
-scipy
-gitpython
-piexif
-rotary-embedding-torch
-onnxruntime
-segment-anything
-hf_transfer
-torchsde
-av
-comfyui-frontend-package
-comfyui-workflow-templates
-comfyui-embedded-docs
-tokenizers
+transformers>=4.50.3
+tokenizers>=0.13.3
 sentencepiece
-yarl
+safetensors>=0.4.2
+aiohttp>=3.11.8
+yarl>=1.18.0
 pyyaml
+Pillow>=10.3.0
+scipy
+tqdm
+psutil
 alembic
-SQLAlchemy
+SQLAlchemy>=2.0.0
+filelock
+av>=17.0.0
+requests
+simpleeval>=1.0.0
+blake3
+kornia>=0.7.1
 spandrel
-pydantic
-pydantic-settings
-msgpack
-omegaconf
+pydantic~=2.0
+pydantic-settings~=2.0
+
+# --- ComfyUI-GGUF (UnetLoaderGGUF, CLIPLoaderGGUF) ---
+gguf>=0.13.0
+protobuf
+
+# --- Impact Pack + Impact Subpack (FaceDetailer/SEGS/SAM/Ultralytics) ---
+# `segment_anything` is a module-scope import in Impact Pack and is required.
+# `sam2` is NOT: it is guarded by importlib.util.find_spec("sam2") and only logs
+# a warning when absent, so the fragile `git+.../sam2` dependency is skipped.
+segment-anything
+scikit-image
+piexif
+dill
+matplotlib
+ultralytics
+
+# --- KJNodes (ImageResizeKJv2) ---
+color-matcher
+mss
+
+# comfyui_controlnet_aux is intentionally NOT installed: its only node in the
+# reference graph (MediaPipe-FaceMeshPreprocessor) feeds a SEGS output that is
+# wired to nothing, so the whole mediapipe/onnxruntime stack is unnecessary.
+
+# --- RES4LYF (res_2s sampler / bong_tangent scheduler) ---
+pywavelets
+
+# --- Shared ---
+# Exactly one OpenCV distribution. Impact Pack and KJNodes ask for
+# opencv-python-headless while RES4LYF asks for opencv-python; installing both
+# conflicts over the same `cv2` module, and headless satisfies every import
+# while avoiding GUI libraries that do not exist in a Space container.
+opencv-python-headless

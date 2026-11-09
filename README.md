@@ -4,10 +4,13 @@ emoji: 🔬
 colorFrom: indigo
 colorTo: blue
 sdk: gradio
-sdk_version: 6.2.0
+sdk_version: 6.31.0
+python_version: "3.11"
 app_file: app.py
 pinned: false
 license: mit
+suggested_hardware: zero-a10g
+startup_duration_timeout: 1h
 tags:
   - research
   - ai-safety
@@ -18,35 +21,57 @@ tags:
 
 # 🔬 SynthID Watermark Remover
 
-A research tool demonstrating the removal of invisible SynthID watermarks from AI-generated images using diffusion-based reconstruction techniques.
+A research tool demonstrating the removal of invisible SynthID watermarks from
+AI-generated images using diffusion-based reconstruction.
+
+This Space is a faithful port of the **V2** ComfyUI workflow from
+[cebeuq/Synthid-Bypass](https://github.com/cebeuq/Synthid-Bypass)
+(`Synthid-Bypass-v2.0.json`) to a headless, in-process Hugging Face Space.
 
 ## 🎯 Overview
 
-This application implements the technique described in the [SynthID-Bypass research](https://github.com/00quebec/Synthid-Bypass) by 00quebec. It demonstrates that pixel-space watermarks embedded by Google's SynthID technology can be disrupted through careful re-processing with diffusion models.
+The core hypothesis, from the original research: if the watermark lives in
+low-level image noise, a tightly constrained diffusion reconstruction can keep
+the composition while discarding the watermark-carrying pixels.
 
-## 🔧 How It Works
+The upstream author arrived at this by rendering a blank black image through
+Nano Banana Pro and then pushing exposure and shadows until the watermark
+pattern became visible. A key observation was that the pattern is **not
+deterministic** — regenerating the same prompt yields a different pattern each
+time — which is what makes a re-noising attack plausible in the first place.
 
-The core technique involves three key steps:
+## 🔧 How It Works (V2 pipeline)
 
-1. **Structural Extraction**: Uses Canny edge detection to create a structural map of the image
-2. **Low-Denoise Diffusion**: Applies multiple passes of low-strength denoising to "re-noise" the image, replacing the watermark-carrying pixels
-3. **ControlNet Guidance**: Preserves the original composition and structure using ControlNet conditioning
+V2 combines two model paths in a single graph:
 
-This process effectively "launders" the pixels - keeping semantic and structural information while replacing the low-level noise that carries the watermark.
+1. **Input normalization and adaptive denoise** — the image is loaded and a
+   denoise target is computed from its resolution by the bundled
+   `Synthid-Bypass-AdaptiveDenoise` node, so the strength scales predictably
+   across input sizes.
+2. **Global redraw pass** — a single low-denoise `KSampler` redraws the image
+   through the **Qwen-Image** path, while a Canny edge map drives
+   `QwenImageDiffsynthControlnet` to lock the composition in place.
+3. **Strict face segmentation** — faces are detected with Ultralytics, refined
+   with MediaPipe face mesh and a SAM-assisted path, and converted to SEGS.
+4. **Adaptive face reconstruction** — the bundled
+   `Synthid-Bypass-Facedetailer` (`SEGSDetailerModelSwap`) swaps to the
+   **Z-Image Turbo** path for a face-only cleanup pass with adaptive denoise
+   scaling, keeping renoised faces close to the originals.
+5. **Composite and save** — the updated SEGS regions are pasted back onto the
+   main image.
+
+Input images are processed at their **native resolution**, matching the
+reference workflow — which ships with its `ImageScaleToTotalPixels` node
+bypassed, enabling it only for inputs above roughly 4K.
 
 ## 🚀 Usage
 
-1. Upload an AI-generated image with a SynthID watermark
-2. Adjust settings if needed (default values work well for most images)
-3. Click "Remove Watermark" and wait for processing
-4. Download the processed image
+1. Upload an AI-generated image carrying a SynthID watermark.
+2. Click **Remove Watermark**.
+3. Download the result.
 
-### Advanced Settings
-
-- **Denoise Strength** (0.05-0.3): Lower values preserve more detail but may leave watermark traces
-- **Inference Steps** (10-50): More steps = better quality but slower processing
-- **Guidance Scale** (5.0-15.0): Controls how strongly the model follows the prompt
-- **ControlNet Scale** (0.5-1.0): Strength of structural preservation
+The first request after a cold start is slower, because the Space fetches the
+model weights before the first run.
 
 ## ⚠️ Ethical Considerations & Disclaimer
 
@@ -55,52 +80,66 @@ This process effectively "launders" the pixels - keeping semantic and structural
 - ❌ Do NOT use for malicious purposes
 - ❌ Do NOT use to circumvent copyright
 - ❌ Do NOT use to misrepresent content origin
-- ✅ DO use for research and understanding watermark robustness
-- ✅ DO use to develop better watermarking techniques
+- ✅ DO use for research into watermark robustness
+- ✅ DO use to help develop more robust watermarking
 
 This proof-of-concept is presented "as-is" and without warranty.
 
-## 🔬 Research Background
-
-This implementation demonstrates a fundamental challenge in synthetic media detection: watermarks embedded in pixel space are vulnerable to reconstruction-style attacks. The research shows that:
-
-- SynthID watermarks are not deterministic (different noise patterns each time)
-- Low-denoise diffusion can replace watermark-carrying noise
-- Structural guidance (ControlNet) prevents content degradation
-- Multiple passes ensure complete watermark removal
-
 ## 🛠️ Technical Details
 
-**Models Used:**
-- Stable Diffusion v1.5 (base diffusion model)
-- ControlNet Canny (structural preservation)
-- DDIM Scheduler (quality optimization)
+**Qwen-Image path (global redraw)**
 
-**Processing Pipeline:**
-1. Image preprocessing and resizing
-2. Canny edge extraction
-3. 3-pass low-denoise diffusion
-4. ControlNet-guided reconstruction
+| File | Directory |
+| --- | --- |
+| `qwen-image-2512-Q4_K_M.gguf` | `models/diffusion_models/` |
+| `Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf` | `models/clip/` |
+| `qwen_image_vae.safetensors` | `models/vae/` |
+| `qwen_image_canny_diffsynth_controlnet.safetensors` | `models/model_patches/` |
+| `Qwen-Image-2512-Lightning-4steps-V1.0-fp32.safetensors` | `models/loras/` |
+
+**Z-Image Turbo path (face cleanup)**
+
+| File | Directory |
+| --- | --- |
+| `z_image_turbo-Q4_K_M.gguf` | `models/diffusion_models/` |
+| `Qwen_3_4b-imatrix-IQ4_XS.gguf` | `models/clip/` |
+| `ae.safetensors` | `models/vae/` |
+
+**Detection**
+
+| File | Directory |
+| --- | --- |
+| `yolov8n-face.pt` | `models/ultralytics/bbox/` |
+| `sam_vit_b_01ec64.pth` | `models/sams/` |
+
+V2 is GGUF-first: both the model and CLIP paths use GGUF loaders, which is what
+keeps two full model stacks resident at once.
 
 ## 📚 Credits & References
 
-- **Original Research**: [00quebec/Synthid-Bypass](https://github.com/00quebec/Synthid-Bypass)
-- **Related Paper**: Hu, Y., et al. (2024). "Stable signature is unstable: Removing image watermark from diffusion models." [arXiv:2405.07145](https://arxiv.org/abs/2405.07145)
+- **Original research**: [cebeuq/Synthid-Bypass](https://github.com/cebeuq/Synthid-Bypass)
+  (formerly `00quebec/Synthid-Bypass`) — all workflow design and parameters are theirs.
+- **Related paper**: Hu, Y., et al. (2024). "Stable signature is unstable:
+  Removing image watermark from diffusion models."
+  [arXiv:2405.07145](https://arxiv.org/abs/2405.07145)
 - **SynthID**: [Google DeepMind](https://deepmind.google/models/synthid/)
+
+Built on [ComfyUI](https://github.com/comfyanonymous/ComfyUI) and the
+ComfyUI-GGUF, Impact Pack, Impact Subpack, KJNodes, controlnet_aux,
+Inpaint-CropAndStitch, rgthree and RES4LYF node packs.
 
 ## 🤝 Contributing
 
-This is a research tool. If you develop techniques that:
-- Defeat this bypass method
-- Create more robust watermarking
-- Improve the removal process
-
-Please contribute to the broader AI safety dialogue!
+This is a research tool. If you develop techniques that defeat this bypass,
+produce more robust watermarking, or improve the removal process, please
+contribute to the broader AI safety dialogue — upstream asks that you open an
+issue or PR on the GitHub repo with your results.
 
 ## 📄 License
 
-MIT License - See LICENSE file for details
+MIT License
 
 ---
 
-**Remember**: The goal of this research is to improve AI safety, not to undermine it. Use responsibly and ethically.
+**Remember**: the goal of this research is to improve AI safety, not to
+undermine it. Use responsibly and ethically.
