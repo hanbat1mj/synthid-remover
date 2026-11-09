@@ -1,7 +1,7 @@
 """
 SynthID Watermark Remover -- Hugging Face Space.
 
-A headless port of the V2 ComfyUI workflow from cebeuq/Synthid-Bypass
+A headless port of a two-stage V2 ComfyUI watermark-removal workflow
 (`Synthid-Bypass-v2.0.json`) to a ZeroGPU Gradio Space.
 
 Why this runs ComfyUI *in-process* rather than as a subprocess
@@ -623,9 +623,7 @@ with gr.Blocks(title="SynthID Remover") as demo:
         gr.Markdown(
             "Removes SynthID watermarks by re-rendering an image through a "
             "constrained diffusion reconstruction: a ControlNet-locked global "
-            "redraw, followed by a dedicated face reconstruction pass. A port "
-            "of the V2 workflow from "
-            "[cebeuq/Synthid-Bypass](https://github.com/cebeuq/Synthid-Bypass). "
+            "redraw, followed by a dedicated face reconstruction pass. "
             "**Research tool** — please read the ethical use notes in the "
             "Space README."
         )

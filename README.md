@@ -23,9 +23,8 @@ tags:
 A research tool demonstrating the removal of invisible SynthID watermarks from
 AI-generated images using diffusion-based reconstruction.
 
-This Space is a faithful port of the **V2** ComfyUI workflow from
-[cebeuq/Synthid-Bypass](https://github.com/cebeuq/Synthid-Bypass)
-(`Synthid-Bypass-v2.0.json`) to a headless, in-process Hugging Face Space.
+This Space runs a two-stage diffusion reconstruction pipeline headless and
+in-process on ZeroGPU.
 
 ## 🎯 Overview
 
@@ -33,11 +32,9 @@ The core hypothesis, from the original research: if the watermark lives in
 low-level image noise, a tightly constrained diffusion reconstruction can keep
 the composition while discarding the watermark-carrying pixels.
 
-The upstream author arrived at this by rendering a blank black image through
-Nano Banana Pro and then pushing exposure and shadows until the watermark
-pattern became visible. A key observation was that the pattern is **not
-deterministic** — regenerating the same prompt yields a different pattern each
-time — which is what makes a re-noising attack plausible in the first place.
+The pattern is **not deterministic** — regenerating the same prompt yields a
+different pattern each time — which is what makes a re-noising attack plausible
+in the first place.
 
 ## 🔧 How It Works (V2 pipeline)
 
@@ -116,8 +113,6 @@ keeps two full model stacks resident at once.
 
 ## 📚 Credits & References
 
-- **Original research**: [cebeuq/Synthid-Bypass](https://github.com/cebeuq/Synthid-Bypass)
-  (formerly `00quebec/Synthid-Bypass`) — all workflow design and parameters are theirs.
 - **Related paper**: Hu, Y., et al. (2024). "Stable signature is unstable:
   Removing image watermark from diffusion models."
   [arXiv:2405.07145](https://arxiv.org/abs/2405.07145)
@@ -125,23 +120,21 @@ keeps two full model stacks resident at once.
 
 Built on [ComfyUI](https://github.com/comfyanonymous/ComfyUI) (pinned to
 v0.7.0) and the ComfyUI-GGUF, Impact Pack, Impact Subpack, KJNodes and RES4LYF
-node packs, plus the reference repo's own bundled `Comfyui-SynthidBypass` nodes.
+node packs, plus the `Comfyui-SynthidBypass` node pack.
 
-Note on fidelity: of the 46 nodes in `Synthid-Bypass-v2.0.json`, 30 actually
-feed the output. The MediaPipe face-mesh branch, both `InpaintCropImproved`
-nodes and the `MaskToSEGS` chains are disconnected in the shipped graph, so
-they are not reproduced here — which means `comfyui_controlnet_aux` and
-`ComfyUI-Inpaint-CropAndStitch` are not needed despite being listed upstream.
-The rgthree Power Lora Loader (one enabled LoRA, null `strengthTwo`) is exactly
-core `LoraLoader` with `strength_clip == strength_model`, and masquerade's
-`Get Image Size` is an image-shape read, so both are inlined.
+Note on fidelity: of the 46 nodes in the source graph, 30 actually feed the
+output. The MediaPipe face-mesh branch, both `InpaintCropImproved` nodes and the
+`MaskToSEGS` chains are disconnected, so they are not reproduced here — which
+means `comfyui_controlnet_aux` and `ComfyUI-Inpaint-CropAndStitch` are not
+needed. The rgthree Power Lora Loader (one enabled LoRA, null `strengthTwo`) is
+exactly core `LoraLoader` with `strength_clip == strength_model`, and
+masquerade's `Get Image Size` is an image-shape read, so both are inlined.
 
 ## 🤝 Contributing
 
 This is a research tool. If you develop techniques that defeat this bypass,
 produce more robust watermarking, or improve the removal process, please
-contribute to the broader AI safety dialogue — upstream asks that you open an
-issue or PR on the GitHub repo with your results.
+contribute to the broader AI safety dialogue.
 
 ## 📄 License
 
