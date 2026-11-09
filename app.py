@@ -82,8 +82,56 @@ for _directory in (
 # --------------------------------------------------------------------------
 # 2. Register nodes.
 # --------------------------------------------------------------------------
+def _force_comfy_utils_package():
+    """
+    Make the top-level name `utils` resolve to ComfyUI/utils.
+
+    ComfyUI claims several very generic top-level module names (`utils`, `app`,
+    `server`, `nodes`). Some other installed distribution also provides a
+    top-level `utils` module, and whichever one lands in sys.modules first
+    wins. When the other one won, ComfyUI/app/frontend_management.py's
+    `from utils.install_util import ...` failed with:
+
+        ModuleNotFoundError: No module named 'utils.install_util';
+        'utils' is not a package
+
+    Path order alone is not enough to prevent this -- ComfyUI's directory is
+    first on sys.path, but an already-imported module is never re-resolved. So
+    purge any cached `utils` and load ComfyUI's package explicitly by path.
+    """
+    import importlib.util
+
+    comfy_utils_init = os.path.join(COMFYUI_DIR, "utils", "__init__.py")
+    existing = sys.modules.get("utils")
+    if existing is not None:
+        existing_file = getattr(existing, "__file__", "") or ""
+        if existing_file and os.path.realpath(existing_file) == os.path.realpath(
+            comfy_utils_init
+        ):
+            return
+        print(
+            f"[setup] top-level 'utils' resolved to {existing_file or '<unknown>'}; "
+            "replacing it with ComfyUI's utils package",
+            flush=True,
+        )
+
+    for name in [n for n in list(sys.modules) if n == "utils" or n.startswith("utils.")]:
+        del sys.modules[name]
+
+    spec = importlib.util.spec_from_file_location(
+        "utils",
+        comfy_utils_init,
+        submodule_search_locations=[os.path.join(COMFYUI_DIR, "utils")],
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["utils"] = module
+    spec.loader.exec_module(module)
+
+
 def _bootstrap_nodes():
     """Register comfy_extras + the whitelisted custom node packs."""
+    _force_comfy_utils_package()
+
     import server
     from nodes import init_extra_nodes
 
