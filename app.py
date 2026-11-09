@@ -632,10 +632,22 @@ with gr.Blocks(title="SynthID Remover") as demo:
 
         with gr.Row():
             with gr.Column():
-                input_image = gr.Image(type="pil", label="Input Image", height=512)
+                # format="png": Gradio defaults image components to lossy WebP
+                # (~14:1). This technique works on low-amplitude, high-frequency
+                # pixel noise, which is exactly what a lossy re-encode rewrites --
+                # it would both degrade the result and confound the experiment,
+                # since you could no longer tell whether a watermark was removed
+                # by the diffusion pipeline or by the compression on the way out.
+                input_image = gr.Image(
+                    type="pil", label="Input Image", height=512, format="png"
+                )
             with gr.Column():
                 output_image = gr.Image(
-                    type="pil", label="Cleaned Image", height=512, interactive=False
+                    type="pil",
+                    label="Cleaned Image",
+                    height=512,
+                    interactive=False,
+                    format="png",
                 )
 
         submit = gr.Button("Remove Watermark", variant="primary")
