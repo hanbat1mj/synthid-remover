@@ -293,18 +293,15 @@ def _apply_alpha(
             original = original.resize(rgb.size, Image.Resampling.LANCZOS)
         original_arr = np.asarray(original.convert("RGB"), dtype=np.float32) / 255.0
 
-        # Feather an eroded opaque mask: 1 in the safe interior, 0 on the
-        # silhouette. Never take model pixels from the anti-aliased band
-        # (alpha < 254): that band is exactly where the white rim appears, so it
-        # must come from the original untouched. Threshold is 254, not 255, so
-        # near-opaque pixels (alpha 254) still get the model instead of silently
-        # reverting the whole interior to the original.
-        opaque = alpha_img.point(lambda v: 255 if v >= 254 else 0)
-        interior = opaque.filter(ImageFilter.MinFilter(3))
+        # Revert only a ~2px band at the subject boundary (where the redraw/VAE
+        # leaves a faint white rim) and keep the model everywhere else.
+        # "Subject" is anything at least half-opaque, so a soft or wide alpha
+        # edge is not reverted wholesale -- reverting it wholesale is what
+        # disabled the watermark removal. MinFilter(5) erodes the subject by 2px.
+        subject = alpha_img.point(lambda v: 255 if v >= 128 else 0)
+        interior = subject.filter(ImageFilter.MinFilter(5))
         interior = interior.filter(ImageFilter.GaussianBlur(1))
         keep = np.asarray(interior, dtype=np.float32)[..., None] / 255.0
-        band = a < (254.0 / 255.0)
-        keep = np.where(band[..., None], 0.0, keep)
         color = keep * color + (1.0 - keep) * original_arr
 
     result = Image.fromarray(
