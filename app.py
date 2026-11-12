@@ -43,7 +43,7 @@ import traceback
 import gradio as gr
 import numpy as np
 import torch
-from PIL import Image, ImageOps
+from PIL import Image, ImageFilter, ImageOps
 
 import install
 
@@ -223,7 +223,9 @@ def node(class_type: str, **inputs):
 # --------------------------------------------------------------------------
 # 3. Tensor helpers. ComfyUI IMAGE == float32 NHWC in [0, 1].
 # --------------------------------------------------------------------------
-def _composite_rgba(image: Image.Image) -> tuple[Image.Image, np.ndarray | None]:
+def _composite_rgba(
+    image: Image.Image,
+) -> tuple[Image.Image, np.ndarray | None, Image.Image]:
     """
     Normalize an input to opaque RGB for the diffusion pipeline, keeping its
     alpha channel (if any) so it can be re-applied to the result.
@@ -233,19 +235,27 @@ def _composite_rgba(image: Image.Image) -> tuple[Image.Image, np.ndarray | None]
     black). That black then bleeds into the reconstruction. Compositing onto an
     opaque white background first gives those pixels a sane color to redraw,
     and re-attaching the original alpha at the end restores the transparency.
+
+    Returns ``(rgb, alpha_or_none, original_rgba)``. The original RGBA is kept so
+    ``_apply_alpha`` can protect the anti-aliased silhouette from redraw/VAE
+    halos.
     """
     image = ImageOps.exif_transpose(image)
     rgba = image.convert("RGBA")
     alpha = np.asarray(rgba.getchannel("A"), dtype=np.float32) / 255.0
     if alpha.min() >= 1.0:
         # Fully opaque: nothing to preserve, treat it as plain RGB.
-        return rgba.convert("RGB"), None
+        return rgba.convert("RGB"), None, rgba
     background = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
     composited = Image.alpha_composite(background, rgba).convert("RGB")
-    return composited, alpha
+    return composited, alpha, rgba
 
 
-def _apply_alpha(rgb: Image.Image, alpha: np.ndarray | None) -> Image.Image:
+def _apply_alpha(
+    rgb: Image.Image,
+    alpha: np.ndarray | None,
+    original_rgba: Image.Image | None = None,
+) -> Image.Image:
     """
     Re-attach the input's alpha channel to the cleaned result.
 
@@ -256,7 +266,10 @@ def _apply_alpha(rgb: Image.Image, alpha: np.ndarray | None) -> Image.Image:
 
         P = C * a + white * (1 - a)   ->   C = (P - (1 - a)) / a
 
-    Fully transparent pixels are invisible, so their colour is left untouched.
+    The VAE round-trip and the final resize can also leave a faint bright rim
+    along the silhouette itself, which un-premultiplying cannot fix. So the
+    anti-aliased boundary (and a pixel or two inside it) is taken from the
+    original RGBA, while the fully opaque interior keeps the redrawn pixels.
     """
     if alpha is None:
         return rgb
@@ -273,6 +286,23 @@ def _apply_alpha(rgb: Image.Image, alpha: np.ndarray | None) -> Image.Image:
     color = (rgb_arr - (1.0 - a)[..., None]) / safe_a[..., None]
     color = np.clip(color, 0.0, 1.0)
     color = np.where(visible[..., None], color, rgb_arr)
+
+    if original_rgba is not None:
+        original = original_rgba.convert("RGBA")
+        if original.size != rgb.size:
+            original = original.resize(rgb.size, Image.Resampling.LANCZOS)
+        original_arr = np.asarray(original.convert("RGB"), dtype=np.float32) / 255.0
+
+        # Feather an eroded opaque mask: 1 in the safe interior, 0 on the
+        # silhouette. Never take model pixels from the anti-aliased band
+        # (alpha < 1): that band is exactly where the white rim appears, so it
+        # must come from the original untouched.
+        opaque = alpha_img.point(lambda v: 255 if v >= 254 else 0)
+        interior = opaque.filter(ImageFilter.MinFilter(3))
+        interior = interior.filter(ImageFilter.GaussianBlur(1))
+        keep = np.asarray(interior, dtype=np.float32)[..., None] / 255.0
+        keep = keep * (a >= 0.999)[..., None]
+        color = keep * color + (1.0 - keep) * original_arr
 
     result = Image.fromarray(
         (color * 255.0).round().astype(np.uint8), mode="RGB"
@@ -649,7 +679,7 @@ def remove_watermark(
             # RGBA inputs are flattened onto white first and their alpha is
             # stashed, then re-applied to the final result so transparency
             # survives the RGB-only diffusion pipeline.
-            input_rgb, alpha = _composite_rgba(input_image)
+            input_rgb, alpha, input_rgba = _composite_rgba(input_image)
             image = pil_to_tensor(input_rgb)
 
             # 595 Synthid-Bypass-AdaptiveDenoise -> denoise for the redraw pass.
@@ -864,7 +894,7 @@ def remove_watermark(
                 result = result * float(fidelity) + image * (1.0 - float(fidelity))
                 result = result.clamp(0.0, 1.0)
 
-            return _apply_alpha(tensor_to_pil(result), alpha)
+            return _apply_alpha(tensor_to_pil(result), alpha, input_rgba)
 
     except gr.Error:
         raise
