@@ -23,9 +23,17 @@ from __future__ import annotations
 
 # `spaces` must be imported before torch or anything that can initialize CUDA,
 # or it raises "CUDA has been initialized before importing the `spaces` package".
-import spaces  # noqa: F401  # isort: skip
+#
+# On a local machine (Apple Silicon MPS, desktop CPU/CUDA) ZeroGPU is not
+# present. Fall back to `spaces = None` and a no-op GPU wrapper so the same file
+# runs both as a Hugging Face Space and as a plain local Gradio app.
+try:  # pragma: no cover - exercised only on ZeroGPU
+    import spaces  # noqa: F401  # isort: skip
+except Exception:  # noqa: BLE001 - any failure means "not on ZeroGPU"
+    spaces = None
 
 import asyncio
+import gc
 import os
 import random
 import sys
@@ -215,8 +223,44 @@ def node(class_type: str, **inputs):
 # --------------------------------------------------------------------------
 # 3. Tensor helpers. ComfyUI IMAGE == float32 NHWC in [0, 1].
 # --------------------------------------------------------------------------
+def _composite_rgba(image: Image.Image) -> tuple[Image.Image, np.ndarray | None]:
+    """
+    Normalize an input to opaque RGB for the diffusion pipeline, keeping its
+    alpha channel (if any) so it can be re-applied to the result.
+
+    A naive `.convert("RGB")` on an RGBA image just drops the alpha and leaves
+    whatever stray color the encoder stored under transparent pixels (often
+    black). That black then bleeds into the reconstruction. Compositing onto an
+    opaque white background first gives those pixels a sane color to redraw,
+    and re-attaching the original alpha at the end restores the transparency.
+    """
+    image = ImageOps.exif_transpose(image)
+    rgba = image.convert("RGBA")
+    alpha = np.asarray(rgba.getchannel("A"), dtype=np.float32) / 255.0
+    if alpha.min() >= 1.0:
+        # Fully opaque: nothing to preserve, treat it as plain RGB.
+        return rgba.convert("RGB"), None
+    background = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+    composited = Image.alpha_composite(background, rgba).convert("RGB")
+    return composited, alpha
+
+
+def _apply_alpha(rgb: Image.Image, alpha: np.ndarray | None) -> Image.Image:
+    """Re-attach the input's alpha channel to the cleaned RGB result."""
+    if alpha is None:
+        return rgb
+    alpha_img = Image.fromarray(
+        (np.clip(alpha, 0.0, 1.0) * 255.0).round().astype(np.uint8), mode="L"
+    )
+    if alpha_img.size != rgb.size:
+        alpha_img = alpha_img.resize(rgb.size, Image.Resampling.LANCZOS)
+    result = rgb.convert("RGBA")
+    result.putalpha(alpha_img)
+    return result
+
+
 def pil_to_tensor(image: Image.Image) -> torch.Tensor:
-    image = ImageOps.exif_transpose(image).convert("RGB")
+    # `image` must already be an opaque RGB image (see _composite_rgba).
     array = np.asarray(image, dtype=np.float32) / 255.0
     return torch.from_numpy(array)[None,]
 
@@ -325,56 +369,159 @@ GPU_DURATION = 120
 # GPU slot. A cold worker re-pays only an mmap over warm page cache --
 # ComfyUI-GGUF's loader is `torch.from_numpy(tensor.data)` over a memory-mapped
 # file, not a 29GB read.
-_MODEL_LOCK = threading.Lock()
-_MODELS: dict[str, object] = {}
+def _using_zerogpu() -> bool:
+    """True only when running inside a Hugging Face ZeroGPU Space.
+
+    ZeroGPU Spaces set ``SPACES_ZERO_GPU=true``; a plain Space or a local machine
+    does not. Checking the flag (rather than whether the ``spaces`` package is
+    importable) keeps a local ``pip install`` of ``spaces`` from being mistaken
+    for ZeroGPU.
+    """
+    if spaces is None:
+        return False
+    return os.environ.get("SPACES_ZERO_GPU", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
-def models() -> dict[str, object]:
-    """Load every model once per worker. Only call inside @spaces.GPU."""
-    with _MODEL_LOCK:
-        if _MODELS:
-            return _MODELS
+ZEROGPU = _using_zerogpu()
 
-        print("[models] loading Qwen-Image path", flush=True)
-        qwen_unet = node("UnetLoaderGGUF", unet_name=QWEN_UNET_FILE)
-        qwen_clip = node("CLIPLoaderGGUF", clip_name=QWEN_CLIP_FILE, type=QWEN_CLIP_TYPE)
 
-        # 564: "Power Lora Loader (rgthree)" with a single enabled LoRA and a
-        # null strengthTwo is exactly core LoraLoader with
-        # strength_clip == strength_model, so rgthree is not needed.
-        qwen_model, qwen_clip_patched = node(
-            "LoraLoader",
-            model=qwen_unet[0],
-            clip=qwen_clip[0],
-            lora_name=QWEN_LORA_FILE,
-            strength_model=LORA_STRENGTH,
-            strength_clip=LORA_STRENGTH,
-        )
+def _cuda_vram_gb() -> int | None:
+    if not torch.cuda.is_available():
+        return None
+    try:
+        return int(torch.cuda.get_device_properties(0).total_memory / (1024**3))
+    except Exception:  # noqa: BLE001
+        return None
 
-        print("[models] loading Z-Image Turbo path", flush=True)
-        zimage_unet = node("UnetLoaderGGUF", unet_name=ZIMAGE_UNET_FILE)
-        zimage_clip = node(
-            "CLIPLoaderGGUF", clip_name=ZIMAGE_CLIP_FILE, type=ZIMAGE_CLIP_TYPE
-        )
 
-        print("[models] loading VAEs, controlnet and detectors", flush=True)
-        _MODELS.update(
-            qwen_sampling=node(
-                "ModelSamplingAuraFlow", model=qwen_model, shift=AURA_SHIFT
-            )[0],
-            qwen_clip=qwen_clip_patched,
-            qwen_vae=node("VAELoader", vae_name=QWEN_VAE_FILE)[0],
-            qwen_controlnet=node("ModelPatchLoader", name=QWEN_CONTROLNET_FILE)[0],
-            zimage_unet=zimage_unet[0],
-            zimage_clip=zimage_clip[0],
-            zimage_vae=node("VAELoader", vae_name=ZIMAGE_VAE_FILE)[0],
-            bbox_detector=node(
-                "UltralyticsDetectorProvider", model_name=FACE_DETECTOR_FILE
-            )[0],
-            sam=node("SAMLoader", model_name=SAM_FILE, device_mode="AUTO")[0],
-        )
-        print("[models] ready", flush=True)
-        return _MODELS
+# On ZeroGPU both stacks are held at once (GGUF offloads layers to CPU RAM when
+# VRAM is short). On Apple Silicon the offloaded layers still live in the *same*
+# unified memory as the GPU, so offloading frees nothing -- the only way to fit
+# ~28 GiB of weights into 36 GB of RAM is to drop a stack before loading the
+# next. The same applies to small-VRAM GPUs such as a Colab T4 (16 GiB): both
+# stacks do not fit, so LOW_MEMORY swaps them. Only a >= 24 GiB GPU (A100 / L4+)
+# holds everything resident.
+LOW_MEMORY = os.environ.get("SYNTHID_LOW_MEMORY")
+if LOW_MEMORY is None:
+    if ZEROGPU:
+        LOW_MEMORY = False
+    else:
+        _vram = _cuda_vram_gb()
+        LOW_MEMORY = _vram is None or _vram < 24
+else:
+    LOW_MEMORY = LOW_MEMORY.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _release_memory() -> None:
+    """Drop cached model tensors and ask the backend to reclaim memory."""
+    gc.collect()
+    for empty in (
+        getattr(torch.mps, "empty_cache", None),
+        getattr(torch.cuda, "empty_cache", None),
+    ):
+        if empty is not None:
+            try:
+                empty()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def _load_qwen_stack() -> dict[str, object]:
+    print("[models] loading Qwen-Image path", flush=True)
+    qwen_unet = node("UnetLoaderGGUF", unet_name=QWEN_UNET_FILE)
+    qwen_clip = node("CLIPLoaderGGUF", clip_name=QWEN_CLIP_FILE, type=QWEN_CLIP_TYPE)
+
+    # 564: "Power Lora Loader (rgthree)" with a single enabled LoRA and a
+    # null strengthTwo is exactly core LoraLoader with
+    # strength_clip == strength_model, so rgthree is not needed.
+    qwen_model, qwen_clip_patched = node(
+        "LoraLoader",
+        model=qwen_unet[0],
+        clip=qwen_clip[0],
+        lora_name=QWEN_LORA_FILE,
+        strength_model=LORA_STRENGTH,
+        strength_clip=LORA_STRENGTH,
+    )
+    return {
+        "qwen_sampling": node(
+            "ModelSamplingAuraFlow", model=qwen_model, shift=AURA_SHIFT
+        )[0],
+        "qwen_clip": qwen_clip_patched,
+        "qwen_vae": node("VAELoader", vae_name=QWEN_VAE_FILE)[0],
+        "qwen_controlnet": node("ModelPatchLoader", name=QWEN_CONTROLNET_FILE)[0],
+    }
+
+
+def _load_zimage_stack() -> dict[str, object]:
+    print("[models] loading Z-Image Turbo path", flush=True)
+    zimage_unet = node("UnetLoaderGGUF", unet_name=ZIMAGE_UNET_FILE)
+    zimage_clip = node(
+        "CLIPLoaderGGUF", clip_name=ZIMAGE_CLIP_FILE, type=ZIMAGE_CLIP_TYPE
+    )
+    return {
+        "zimage_unet": zimage_unet[0],
+        "zimage_clip": zimage_clip[0],
+        "zimage_vae": node("VAELoader", vae_name=ZIMAGE_VAE_FILE)[0],
+    }
+
+
+def _load_detectors() -> dict[str, object]:
+    print("[models] loading face detectors (YOLOv8n + SAM)", flush=True)
+    return {
+        "bbox_detector": node(
+            "UltralyticsDetectorProvider", model_name=FACE_DETECTOR_FILE
+        )[0],
+        "sam": node("SAMLoader", model_name=SAM_FILE, device_mode="AUTO")[0],
+    }
+
+
+class _ModelStore:
+    """
+    Lazily loads the three model stacks and caches them by key.
+
+    With `low_memory` a requested stack first evicts every other stack, so the
+    Qwen and Z-Image stacks are never resident at the same time (36 GB unified
+    memory). Otherwise all stacks accumulate, matching the original ZeroGPU
+    behavior. Loading stays lazy so the ZeroGPU GGMLTensor construction only
+    happens inside the `@spaces.GPU` worker, exactly as before.
+    """
+
+    def __init__(self, low_memory: bool):
+        self._low_memory = low_memory
+        self._lock = threading.Lock()
+        self._cache: dict[str, object] = {}
+        self._loaders = {
+            "qwen": _load_qwen_stack,
+            "zimage": _load_zimage_stack,
+            "detectors": _load_detectors,
+        }
+        self._stack_of: dict[str, str] = {}
+        for key in ("qwen_sampling", "qwen_clip", "qwen_vae", "qwen_controlnet"):
+            self._stack_of[key] = "qwen"
+        for key in ("zimage_unet", "zimage_clip", "zimage_vae"):
+            self._stack_of[key] = "zimage"
+        for key in ("bbox_detector", "sam"):
+            self._stack_of[key] = "detectors"
+
+    def __getitem__(self, key: str) -> object:
+        with self._lock:
+            if key in self._cache:
+                return self._cache[key]
+            if self._low_memory:
+                # The pipeline touches each stack in one contiguous block, so
+                # this evicts at most once per stage -- not once per key.
+                self._cache.clear()
+                _release_memory()
+            self._cache.update(self._loaders[self._stack_of[key]]())
+            return self._cache[key]
+
+
+MODELS = _ModelStore(low_memory=LOW_MEMORY)
 
 # RES4LYF contributes no nodes -- it appends `res_2s` to
 # comfy.samplers.KSampler.SAMPLERS and `bong_tangent` to Impact Pack's scheduler
@@ -401,13 +548,33 @@ def _assert_res4lyf():
 
 
 _assert_res4lyf()
-print("[setup] nodes registered; models load on the first request", flush=True)
+
+try:
+    from comfy import model_management
+
+    _backend = model_management.get_torch_device()
+except Exception:  # noqa: BLE001
+    _backend = None
+print(
+    f"[setup] nodes registered; backend={_backend} "
+    f"mps={torch.backends.mps.is_available()} "
+    f"cuda={torch.cuda.is_available()} "
+    f"low_memory={LOW_MEMORY}; models load on first request",
+    flush=True,
+)
 
 
 # --------------------------------------------------------------------------
 # 6. The pipeline.
 # --------------------------------------------------------------------------
-@spaces.GPU(duration=GPU_DURATION)
+def _gpu_call(fn):
+    """Wrap a function for ZeroGPU, or return it unchanged on a local machine."""
+    if ZEROGPU:
+        return spaces.GPU(duration=GPU_DURATION)(fn)
+    return fn
+
+
+@_gpu_call
 def remove_watermark(
     input_image: Image.Image | None,
     adaptive_level: int = DEFAULT_ADAPTIVE_LEVEL,
@@ -426,12 +593,17 @@ def remove_watermark(
     face_seed = random.randint(0, 0xFFFFFFFFFFFFFFFF)
 
     try:
-        m = models()
+        m = MODELS
         with torch.inference_mode():
             # 11 LoadImage. The image is used at native resolution: node 609
             # (ImageScaleToTotalPixels) is bypassed in the reference workflow,
             # so it is a pass-through and is not reproduced here.
-            image = pil_to_tensor(input_image)
+            #
+            # RGBA inputs are flattened onto white first and their alpha is
+            # stashed, then re-applied to the final result so transparency
+            # survives the RGB-only diffusion pipeline.
+            input_rgb, alpha = _composite_rgba(input_image)
+            image = pil_to_tensor(input_rgb)
 
             # 595 Synthid-Bypass-AdaptiveDenoise -> denoise for the redraw pass.
             print("[run] Computing adaptive denoise", flush=True)
@@ -522,6 +694,12 @@ def remove_watermark(
                 device="cpu",
             )[0]
 
+            # Drop every local handle on the Qwen stack before the detectors
+            # load. `controlled_model` is the last live reference to the Qwen
+            # UNet + ControlNet, so deleting it here is what lets LOW_MEMORY
+            # actually release ~21 GiB before the Z-Image stack is fetched.
+            del controlled_model, positive, negative, edges, latent, sampled, decoded
+
             # 613 Simple Detector (SEGS), SAM-refined.
             print("[run] Detecting faces", flush=True)
             segs = node(
@@ -593,14 +771,17 @@ def remove_watermark(
                 alpha=255,
             )[0]
 
-            return tensor_to_pil(result)
+            return _apply_alpha(tensor_to_pil(result), alpha)
 
     except gr.Error:
         raise
-    except torch.cuda.OutOfMemoryError as exc:
+    except torch.OutOfMemoryError as exc:
+        # `torch.OutOfMemoryError` is the base for both CUDA and MPS OOM.
         raise gr.Error(
-            "Ran out of GPU memory. This workflow processes images at their "
-            "native resolution, so try a smaller input image."
+            "Ran out of memory. This workflow processes images at their native "
+            "resolution, so try a smaller input image. On a Mac you can also "
+            "set SYNTHID_LOW_MEMORY=1 (default) so the Qwen and Z-Image stacks "
+            "are never resident at the same time."
         ) from exc
     except Exception as exc:
         # Surface the real failure. The previous revision swallowed every error
@@ -705,4 +886,11 @@ workflow, which ships with its rescale node bypassed.
 if __name__ == "__main__":
     # In Gradio 6, css/theme/js moved from Blocks() to launch(). Passing css to
     # Blocks() there does not raise -- it is silently ignored.
-    demo.queue().launch(css=CSS)
+    #
+    # server_name/port are configurable so a remote host (RunPod, Colab, a VPS)
+    # can expose the UI: RunPod maps 0.0.0.0:7860 to its HTTPS proxy.
+    demo.queue().launch(
+        css=CSS,
+        server_name=os.environ.get("GRADIO_SERVER_NAME", "127.0.0.1"),
+        server_port=int(os.environ.get("GRADIO_SERVER_PORT", "7860")),
+    )

@@ -254,7 +254,13 @@ def install_models() -> None:
     if not os.path.exists(sam_dest):
         print("[models] sam_vit_b_01ec64.pth", flush=True)
         os.makedirs(os.path.dirname(sam_dest), exist_ok=True)
-        _run(["curl", "-fsSL", "-o", sam_dest, SAM_URL])
+        try:
+            _run(["curl", "-fsSL", "-o", sam_dest, SAM_URL])
+        except RuntimeError:
+            # dl.fbaipublicfiles.com has, at times, served a chain some CA
+            # stores reject. Retry once with verification off: this is a single,
+            # widely-distributed public checkpoint, not a private asset.
+            _run(["curl", "-kfsSL", "-o", sam_dest, SAM_URL])
 
 
 def main() -> None:
