@@ -694,13 +694,18 @@ def remove_watermark(
                 # Lanczos over it again would only soften fine detail.
                 redrawn = decoded
             else:
+                # "stretch", not "resize": KJNodes' "resize" preserves aspect
+                # ratio and fits *within* the box, so it can leave the result a
+                # pixel or two short (e.g. 1035 instead of 1037) when the VAE
+                # output is slightly smaller. "stretch" lands on exactly
+                # width x height, which the fidelity blend requires.
                 redrawn = node(
                     "ImageResizeKJv2",
                     image=decoded,
                     width=width,
                     height=height,
                     upscale_method="lanczos",
-                    keep_proportion="resize",
+                    keep_proportion="stretch",
                     pad_color="0, 0, 0",
                     crop_position="center",
                     divisible_by=1,
@@ -812,6 +817,23 @@ def remove_watermark(
             else:
                 print("[run] No faces detected; skipping face pass", flush=True)
                 result = redrawn
+
+            # Defensive size guard: the VAE round-trip and the face pass can
+            # leave the canvas a pixel or two off the input, and the blend below
+            # requires identical shapes. "stretch" makes it exact.
+            if size_of(result) != (width, height):
+                result = node(
+                    "ImageResizeKJv2",
+                    image=result,
+                    width=width,
+                    height=height,
+                    upscale_method="lanczos",
+                    keep_proportion="stretch",
+                    pad_color="0, 0, 0",
+                    crop_position="center",
+                    divisible_by=1,
+                    device="cpu",
+                )[0]
 
             # Optional fidelity guard: pull the result back toward the original.
             # 1.0 is the full redraw; lower values trade watermark removal for
