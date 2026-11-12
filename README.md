@@ -23,8 +23,8 @@ tags:
 A research tool demonstrating the removal of invisible SynthID watermarks from
 AI-generated images using diffusion-based reconstruction.
 
-This Space runs a two-stage diffusion reconstruction pipeline headless and
-in-process on ZeroGPU.
+It runs a two-stage diffusion reconstruction pipeline headless and in-process,
+on ZeroGPU or anywhere with a compatible GPU (CUDA / Apple Silicon MPS).
 
 ## 🎯 Overview
 
@@ -59,6 +59,55 @@ V2 combines two model paths in a single graph:
 Input images are processed at their **native resolution**, matching the
 reference workflow — which ships with its `ImageScaleToTotalPixels` node
 bypassed, enabling it only for inputs above roughly 4K.
+
+## 🧭 This fork: changes & fixes
+
+This repository is a fork of the original
+[SynthID Remover](https://huggingface.co/spaces/dennny123/synth-id-remover) by
+[dennny123](https://huggingface.co/dennny123). The V2 pipeline is unchanged;
+these are the additions on top.
+
+### ✨ Features
+
+- **Transparent (RGBA) input/output** — Gradio's `gr.Image` defaults to
+  `image_mode="RGB"`, which silently drops the alpha channel and exposes the
+  black pixels stored under transparency. Input/output now use
+  `image_mode="RGBA"`; the image is flattened onto white for the diffusion pass,
+  then the original alpha is re-attached at the end.
+- **Runs anywhere (backend-agnostic)** — the hard ZeroGPU/CUDA dependency was
+  removed. The app now runs on Hugging Face ZeroGPU, Apple Silicon (MPS),
+  Google Colab (T4+), RunPod, or any CUDA box, auto-detecting the backend.
+- **Memory-aware loading** — model stacks load lazily and, in low-memory mode,
+  evict each other so the two large stacks are never resident at once. This lets
+  the pipeline fit in ~16 GB VRAM or a 36 GB unified-memory Mac.
+- **Fidelity blend** — a UI slider (0–1) blends the redraw toward the original
+  to reduce visible change at the cost of removal strength.
+- **Smart skips** — the face pass (and its ~7 GiB model stack) is skipped when
+  no face is detected, and redundant resizes are skipped when sizes already
+  match.
+- **Colab / RunPod / local-Mac tooling** — `colab.ipynb`, `runpod_setup.sh`, and
+  `RUN_MAC.md` are included.
+
+### 🐛 Fixes
+
+- Fixed the "black background / lost transparency" bug caused by Gradio's
+  `image_mode="RGB"` default.
+- Fixed a crash in the fidelity blend when the VAE output was a pixel or two off
+  the input size (KJNodes `ImageResizeKJv2` `keep_proportion="resize"` is
+  aspect-fit, not a stretch; switched to `"stretch"`).
+- Removed a white halo on semi-transparent edges (un-premultiply the white
+  flatten before re-applying alpha).
+- Removed a faint white rim on the cutout silhouette (a 2 px edge-preserving
+  band keeps the original pixels there).
+- Fixed a threshold bug that could revert near-opaque pixels and disable the
+  watermark removal entirely.
+- Added a TLS fallback for the SAM checkpoint download.
+
+### ⚙️ Recommended settings
+
+For transparent PNGs, `Adaptive level = 2` and `Fidelity blend = 0.9` give a
+good balance: the result passes the detector while staying visually close to the
+original.
 
 ## 🚀 Usage
 
@@ -113,6 +162,8 @@ keeps two full model stacks resident at once.
 
 ## 📚 Credits & References
 
+- **Original author**: [dennny123](https://huggingface.co/dennny123) —
+  [SynthID Remover (upstream)](https://huggingface.co/spaces/dennny123/synth-id-remover)
 - **Related paper**: Hu, Y., et al. (2024). "Stable signature is unstable:
   Removing image watermark from diffusion models."
   [arXiv:2405.07145](https://arxiv.org/abs/2405.07145)
