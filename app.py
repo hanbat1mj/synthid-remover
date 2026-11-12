@@ -817,8 +817,18 @@ with gr.Blocks(title="SynthID Remover") as demo:
                 # it would both degrade the result and confound the experiment,
                 # since you could no longer tell whether a watermark was removed
                 # by the diffusion pipeline or by the compression on the way out.
+                #
+                # image_mode="RGBA": gr.Image defaults to "RGB", which converts
+                # an RGBA upload to RGB *before* the function runs -- dropping
+                # the alpha and exposing the black pixels stored under
+                # transparency. Keeping RGBA lets remove_watermark see and
+                # preserve the real alpha.
                 input_image = gr.Image(
-                    type="pil", label="Input Image", height=512, format="png"
+                    type="pil",
+                    label="Input Image",
+                    height=512,
+                    format="png",
+                    image_mode="RGBA",
                 )
             with gr.Column():
                 output_image = gr.Image(
@@ -827,6 +837,7 @@ with gr.Blocks(title="SynthID Remover") as demo:
                     height=512,
                     interactive=False,
                     format="png",
+                    image_mode="RGBA",
                 )
 
         submit = gr.Button("Remove Watermark", variant="primary")

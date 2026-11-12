@@ -6,7 +6,7 @@
 # (RunPod proxies that port to an HTTPS URL).
 set -euo pipefail
 
-REPO_URL="${REPO_URL:-https://huggingface.co/spaces/dennny123/synth-id-remover}"
+REPO_URL="${REPO_URL:-https://github.com/hanbat1mj/synthid-remover.git}"
 WORKDIR="${WORKDIR:-/workspace/synthid-remover}"
 # Low-memory mode: leave unset to auto-detect (24GB GPU -> resident; <24GB -> swap).
 # Force with: export SYNTHID_LOW_MEMORY=1
