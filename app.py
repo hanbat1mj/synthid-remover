@@ -246,7 +246,18 @@ def _composite_rgba(image: Image.Image) -> tuple[Image.Image, np.ndarray | None]
 
 
 def _apply_alpha(rgb: Image.Image, alpha: np.ndarray | None) -> Image.Image:
-    """Re-attach the input's alpha channel to the cleaned RGB result."""
+    """
+    Re-attach the input's alpha channel to the cleaned result.
+
+    The pipeline ran on the image flattened onto an opaque white background.
+    Re-attaching alpha directly would composite that white contribution a second
+    time at partial alpha, which shows up as a pale halo along anti-aliased /
+    semi-transparent edges. Undo the white flatten (un-premultiply) first:
+
+        P = C * a + white * (1 - a)   ->   C = (P - (1 - a)) / a
+
+    Fully transparent pixels are invisible, so their colour is left untouched.
+    """
     if alpha is None:
         return rgb
     alpha_img = Image.fromarray(
@@ -254,7 +265,18 @@ def _apply_alpha(rgb: Image.Image, alpha: np.ndarray | None) -> Image.Image:
     )
     if alpha_img.size != rgb.size:
         alpha_img = alpha_img.resize(rgb.size, Image.Resampling.LANCZOS)
-    result = rgb.convert("RGBA")
+
+    rgb_arr = np.asarray(rgb.convert("RGB"), dtype=np.float32) / 255.0
+    a = np.asarray(alpha_img, dtype=np.float32) / 255.0
+    visible = a > 1e-4
+    safe_a = np.where(visible, a, 1.0)
+    color = (rgb_arr - (1.0 - a)[..., None]) / safe_a[..., None]
+    color = np.clip(color, 0.0, 1.0)
+    color = np.where(visible[..., None], color, rgb_arr)
+
+    result = Image.fromarray(
+        (color * 255.0).round().astype(np.uint8), mode="RGB"
+    ).convert("RGBA")
     result.putalpha(alpha_img)
     return result
 
