@@ -275,6 +275,25 @@ def size_of(tensor: torch.Tensor) -> tuple[int, int]:
     return int(tensor.shape[2]), int(tensor.shape[1])
 
 
+def _segs_count(segs) -> int | None:
+    """
+    Best-effort count of Impact Pack SEGS entries.
+
+    SEGS is nominally a tuple whose first element is the list of SEG records,
+    but the exact shape has drifted across Impact Pack versions. Unwrap
+    defensively and return None when the structure is unfamiliar, so the caller
+    falls back to running the detailer instead of guessing wrong.
+    """
+    try:
+        inner = segs[0]
+    except (TypeError, IndexError, KeyError):
+        return None
+    try:
+        return len(inner)
+    except TypeError:
+        return None
+
+
 # --------------------------------------------------------------------------
 # 4. Workflow constants, lifted verbatim from Synthid-Bypass-v2.0.json.
 #    Node ids from that file are kept in comments for traceability.
@@ -326,6 +345,11 @@ SAMPLER_SCHEDULER = "sgm_uniform"
 DENOISE_MIN = 0.08
 DENOISE_MAX = 0.15
 DEFAULT_ADAPTIVE_LEVEL = 6
+
+# Fidelity guard: blend the reconstruction back toward the original image.
+# 1.0 keeps the full redraw; lowering it pulls the result toward the source
+# (less visible change, but proportionally re-introduces the watermark).
+FIDELITY_BLEND_DEFAULT = 0.9
 
 # A cold worker pays the model mmap + host->VRAM transfer on its first call, so
 # this has to cover that plus a full run. ZeroGPU rejects a declared duration
@@ -579,6 +603,7 @@ def remove_watermark(
     input_image: Image.Image | None,
     adaptive_level: int = DEFAULT_ADAPTIVE_LEVEL,
     seed: int = -1,
+    fidelity: float = FIDELITY_BLEND_DEFAULT,
 ):
     # No gr.Progress() parameter: ZeroGPU runs this in a forked worker and the
     # arguments cross a pickling boundary, which a live Progress handle does not
@@ -664,35 +689,43 @@ def remove_watermark(
             # multiple of the latent stride).
             print("[run] Restoring resolution", flush=True)
             width, height = size_of(image)
-            redrawn = node(
-                "ImageResizeKJv2",
-                image=decoded,
-                width=width,
-                height=height,
-                upscale_method="lanczos",
-                keep_proportion="resize",
-                pad_color="0, 0, 0",
-                crop_position="center",
-                divisible_by=1,
-                device="cpu",
-            )[0]
+            if size_of(decoded) == (width, height):
+                # The VAE round-trip already landed on the native size; running
+                # Lanczos over it again would only soften fine detail.
+                redrawn = decoded
+            else:
+                redrawn = node(
+                    "ImageResizeKJv2",
+                    image=decoded,
+                    width=width,
+                    height=height,
+                    upscale_method="lanczos",
+                    keep_proportion="resize",
+                    pad_color="0, 0, 0",
+                    crop_position="center",
+                    divisible_by=1,
+                    device="cpu",
+                )[0]
 
             # 575 Get Image Size -> 576 ImageResizeKJv2: the untouched input,
             # matched to the redraw's geometry. Faces are detected and
             # re-rendered from *this* image, then pasted onto the redraw.
             redrawn_width, redrawn_height = size_of(redrawn)
-            reference = node(
-                "ImageResizeKJv2",
-                image=image,
-                width=redrawn_width,
-                height=redrawn_height,
-                upscale_method="lanczos",
-                keep_proportion="crop",
-                pad_color="0, 0, 0",
-                crop_position="center",
-                divisible_by=1,
-                device="cpu",
-            )[0]
+            if (redrawn_width, redrawn_height) == (width, height):
+                reference = image
+            else:
+                reference = node(
+                    "ImageResizeKJv2",
+                    image=image,
+                    width=redrawn_width,
+                    height=redrawn_height,
+                    upscale_method="lanczos",
+                    keep_proportion="crop",
+                    pad_color="0, 0, 0",
+                    crop_position="center",
+                    divisible_by=1,
+                    device="cpu",
+                )[0]
 
             # Drop every local handle on the Qwen stack before the detectors
             # load. `controlled_model` is the last live reference to the Qwen
@@ -718,58 +751,74 @@ def remove_watermark(
                 sam_model_opt=m["sam"],
             )[0]
 
-            # 583 / 581 CLIP Text Encode for the Z-Image face pass.
-            face_positive = node(
-                "CLIPTextEncode", clip=m["zimage_clip"], text=FACE_POSITIVE_PROMPT
-            )[0]
-            face_negative = node(
-                "CLIPTextEncode", clip=m["zimage_clip"], text=FACE_NEGATIVE_PROMPT
-            )[0]
+            # Skip the Z-Image face pass when no face was found. Besides avoiding
+            # a no-op pass, this stops the ~7 GiB Z-Image stack from being loaded
+            # at all in low-memory mode.
+            has_faces = _segs_count(segs) != 0
 
-            # 592 Synthid-Bypass-Facedetailer: swap to the Z-Image Turbo path
-            # for a face-only cleanup with adaptive denoise.
-            print("[run] Reconstructing faces", flush=True)
-            detailed = node(
-                "SEGSDetailerModelSwap",
-                image=reference,
-                segs=segs,
-                model=m["zimage_unet"],
-                clip=m["zimage_clip"],
-                vae=m["zimage_vae"],
-                positive=face_positive,
-                negative=face_negative,
-                guide_size=768,
-                guide_size_for=True,
-                max_size=1024,
-                seed=face_seed,
-                steps=8,
-                cfg=1,
-                sampler_name="res_2s",
-                scheduler="bong_tangent",
-                denoise=0.1,
-                noise_mask=True,
-                force_inpaint=True,
-                refiner_ratio=0.2,
-                batch_size=1,
-                cycle=1,
-                inpaint_model=False,
-                noise_mask_feather=20,
-                adaptive_denoise=True,
-                adaptive_mode="largest_face",
-                adaptive_ratio=0.03,
-                adaptive_denoise_min=0.05,
-                adaptive_denoise_max=0.28,
-            )[0]
+            if has_faces:
+                # 583 / 581 CLIP Text Encode for the Z-Image face pass.
+                face_positive = node(
+                    "CLIPTextEncode", clip=m["zimage_clip"], text=FACE_POSITIVE_PROMPT
+                )[0]
+                face_negative = node(
+                    "CLIPTextEncode", clip=m["zimage_clip"], text=FACE_NEGATIVE_PROMPT
+                )[0]
 
-            # 574 SEGSPaste: composite the reconstructed faces onto the redraw.
-            print("[run] Compositing", flush=True)
-            result = node(
-                "SEGSPaste",
-                image=redrawn,
-                segs=detailed,
-                feather=10,
-                alpha=255,
-            )[0]
+                # 592 Synthid-Bypass-Facedetailer: swap to the Z-Image Turbo path
+                # for a face-only cleanup with adaptive denoise.
+                print("[run] Reconstructing faces", flush=True)
+                detailed = node(
+                    "SEGSDetailerModelSwap",
+                    image=reference,
+                    segs=segs,
+                    model=m["zimage_unet"],
+                    clip=m["zimage_clip"],
+                    vae=m["zimage_vae"],
+                    positive=face_positive,
+                    negative=face_negative,
+                    guide_size=768,
+                    guide_size_for=True,
+                    max_size=1024,
+                    seed=face_seed,
+                    steps=8,
+                    cfg=1,
+                    sampler_name="res_2s",
+                    scheduler="bong_tangent",
+                    denoise=0.1,
+                    noise_mask=True,
+                    force_inpaint=True,
+                    refiner_ratio=0.2,
+                    batch_size=1,
+                    cycle=1,
+                    inpaint_model=False,
+                    noise_mask_feather=20,
+                    adaptive_denoise=True,
+                    adaptive_mode="largest_face",
+                    adaptive_ratio=0.03,
+                    adaptive_denoise_min=0.05,
+                    adaptive_denoise_max=0.28,
+                )[0]
+
+                # 574 SEGSPaste: composite the reconstructed faces onto the redraw.
+                print("[run] Compositing", flush=True)
+                result = node(
+                    "SEGSPaste",
+                    image=redrawn,
+                    segs=detailed,
+                    feather=10,
+                    alpha=255,
+                )[0]
+            else:
+                print("[run] No faces detected; skipping face pass", flush=True)
+                result = redrawn
+
+            # Optional fidelity guard: pull the result back toward the original.
+            # 1.0 is the full redraw; lower values trade watermark removal for
+            # closeness to the source image.
+            if fidelity < 1.0:
+                result = result * float(fidelity) + image * (1.0 - float(fidelity))
+                result = result.clamp(0.0, 1.0)
 
             return _apply_alpha(tensor_to_pil(result), alpha)
 
@@ -861,10 +910,21 @@ with gr.Blocks(title="SynthID Remover") as demo:
                 label="Seed",
                 info="-1 picks a random seed each run.",
             )
+            fidelity = gr.Slider(
+                minimum=0.0,
+                maximum=1.0,
+                step=0.05,
+                value=FIDELITY_BLEND_DEFAULT,
+                label="Fidelity blend",
+                info=(
+                    "1.0 = 재생성 결과 그대로. 낮출수록 원본과 유사해지지만 "
+                    "워터마크가 일부 복귀합니다. 0.0 = 원본 그대로."
+                ),
+            )
 
         submit.click(
             fn=remove_watermark,
-            inputs=[input_image, adaptive_level, seed],
+            inputs=[input_image, adaptive_level, seed, fidelity],
             outputs=[output_image],
         )
 
