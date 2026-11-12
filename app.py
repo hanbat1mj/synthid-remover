@@ -295,13 +295,16 @@ def _apply_alpha(
 
         # Feather an eroded opaque mask: 1 in the safe interior, 0 on the
         # silhouette. Never take model pixels from the anti-aliased band
-        # (alpha < 1): that band is exactly where the white rim appears, so it
-        # must come from the original untouched.
+        # (alpha < 254): that band is exactly where the white rim appears, so it
+        # must come from the original untouched. Threshold is 254, not 255, so
+        # near-opaque pixels (alpha 254) still get the model instead of silently
+        # reverting the whole interior to the original.
         opaque = alpha_img.point(lambda v: 255 if v >= 254 else 0)
         interior = opaque.filter(ImageFilter.MinFilter(3))
         interior = interior.filter(ImageFilter.GaussianBlur(1))
         keep = np.asarray(interior, dtype=np.float32)[..., None] / 255.0
-        keep = keep * (a >= 0.999)[..., None]
+        band = a < (254.0 / 255.0)
+        keep = np.where(band[..., None], 0.0, keep)
         color = keep * color + (1.0 - keep) * original_arr
 
     result = Image.fromarray(
